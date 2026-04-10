@@ -168,7 +168,7 @@ project-root/
 │   ├── src/
 │   ├── public/
 │   └── package.json
-│
+│__ sample-docs
 └── README.md
 ---
 ```
