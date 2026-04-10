@@ -2,6 +2,7 @@
   "name": "sem-project",
   "private": true,
   "scripts": {
+    "postinstall": "cd frontend && npm install",
     "frontend": "cd frontend && npm run dev",
     "backend": "cd backend && venv\\Scripts\\python -m uvicorn main:app --reload",
     "dev": "concurrently \"npm run backend\" \"npm run frontend\""

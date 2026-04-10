@@ -1,18 +1,21 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import Navbar from "./components/Navbar";
 import ProtectedRoute from "./components/ProtectedRoute";
+import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import SessionChat from "./pages/SessionChat";
 
-export default function App() {
+function Layout() {
+  const location = useLocation();
+  const isLanding = location.pathname === "/";
   return (
-    <BrowserRouter>
-      <Navbar />
-      <main className="main-content">
+    <>
+      {!isLanding && <Navbar />}
+      <main className={isLanding ? "" : "main-content"}>
         <Routes>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route
@@ -33,6 +36,14 @@ export default function App() {
           />
         </Routes>
       </main>
+    </>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Layout />
     </BrowserRouter>
   );
 }

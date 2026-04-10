@@ -10,9 +10,95 @@ from models import ChatSession, ChatMessage, Document, User
 from schemas import QueryRequest, QueryResponse, SourceItem
 from auth import get_current_user
 from utils.embeddings import get_embedding
-from utils.llm import build_rag_response, extract_relevant_summary
+from utils.llm import build_rag_response, build_summary_response, extract_relevant_summary
 
 router = APIRouter(prefix="/query", tags=["Query"])
+
+
+# ─── Meta-query detector ──────────────────────────────────────────────────────
+
+# Document-type nouns — queries that are just "give <noun>" or "show <noun>"
+# should always retrieve top chunks regardless of similarity score.
+_DOC_NOUN_RE = re.compile(
+    r"\b(bill|bills|invoice|invoices|statement|statements|"
+    r"transaction|transactions|ledger|ledgers|receipt|receipts|"
+    r"report|reports|record|records|entry|entries|payment|payments|"
+    r"balance|balances|account|accounts|cheque|cheques|voucher|vouchers|"
+    r"contract|contracts|agreement|agreements|certificate|certificates|"
+    r"document|documents|data|contents?|details?|information|info)\b",
+    re.IGNORECASE,
+)
+
+_META_RE = re.compile(
+    r"\b(summar(y|ize|ise|ies)|overview|describe|explain|"
+    r"contents?\s*of|"
+    r"what\s+(is|are|does)\s+(this|it)\b|what\s+is\s+(in|on)\b|"
+    r"tell\s+me|show\s+me|list\s+(all\s+)?|"
+    r"give\s+(me\s+)?(the\s+)?(content|summary|overview|info|detail|list|all)|"
+    r"what\s+is\s+(about)|about\s+(the\s+)?doc(ument)?|"
+    r"page\s+\d+|pages?\s+\d+)\b",
+    re.IGNORECASE,
+)
+
+# Queries containing specific dates or monetary amounts are always factual
+_SPECIFIC_QUERY_RE = re.compile(
+    r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b"
+    r"|\b\d{4}[-/]\d{2}[-/]\d{2}\b"
+    r"|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b"
+    r"|₹\s*[\d,]+"
+    r"|\bRs\.?\s*[\d,]+"
+    r"|\b\d[\d,]+\.\d{2}\b",
+    re.IGNORECASE,
+)
+
+
+def _is_meta_query(question: str) -> bool:
+    """
+    Returns True for document-level meta queries (summary, page contents, overview,
+    or bare document-type noun queries like 'give bill', 'show transactions').
+    These bypass the similarity threshold and always return top chunks.
+
+    Queries that contain specific dates, amounts, or IDs are always factual
+    and are never treated as meta, regardless of other patterns.
+    """
+    # Factual queries with dates/amounts are never meta
+    if _SPECIFIC_QUERY_RE.search(question):
+        return False
+    if _META_RE.search(question):
+        return True
+    # Short queries (≤5 words) whose non-stop content is a document-type noun
+    words = re.findall(r"\b\w+\b", question)
+    if len(words) <= 5 and _DOC_NOUN_RE.search(question):
+        return True
+    return False
+
+
+# ─── Inline page-reference extractor ─────────────────────────────────────────
+
+def _extract_inline_page_range(question: str) -> Optional[List[int]]:
+    """
+    Detect page references embedded in the question text (not the page_range field).
+    Examples:
+      "give contents of page 3"   → [3]
+      "summarize pages 2 to 5"    → [2, 3, 4, 5]
+      "what is on pages 1-4"      → [1, 2, 3, 4]
+    Returns None if no page reference is found.
+    """
+    # Range: "page(s) N-M" or "page(s) N to M"
+    m = re.search(r"\bpages?\s+(\d+)\s*(?:-|to)\s*(\d+)\b", question, re.IGNORECASE)
+    if m:
+        start, end = int(m.group(1)), int(m.group(2))
+        if 1 <= start <= end and (end - start) < 100:
+            return list(range(start, end + 1))
+
+    # Single: "page N"
+    m = re.search(r"\bpages?\s+(\d+)\b", question, re.IGNORECASE)
+    if m:
+        page = int(m.group(1))
+        if page >= 1:
+            return [page]
+
+    return None
 
 
 # ─── Off-topic response helper ────────────────────────────────────────────────
@@ -129,13 +215,19 @@ def ask_question(
         db.commit()
         return QueryResponse(answer=answer, sources=[])
 
-    # --- Parse optional page range ---
+    # --- Parse optional page range (explicit field first, then inline in question) ---
     allowed_pages: Optional[List[int]] = None
     if data.page_range and data.page_range.strip():
         try:
             allowed_pages = parse_page_range(data.page_range)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        # Auto-detect page references inside the question text
+        allowed_pages = _extract_inline_page_range(data.question)
+
+    # Detect meta/navigation queries — these bypass the similarity threshold
+    is_meta = _is_meta_query(data.question)
 
     # --- Verify session ownership ---
     session = db.query(ChatSession).filter(
@@ -154,7 +246,13 @@ def ask_question(
         )
 
     embedding_str = "[" + ",".join(str(v) for v in question_embedding) + "]"
-    top_k = max(1, min(data.top_k or 5, 20))
+    # Fetch more than needed so filtering still leaves 4 good chunks.
+    # Meta queries get extra width; normal queries fetch 8 to keep the best 4.
+    top_k = max(1, min(data.top_k or 4, 20))
+    if is_meta:
+        top_k = min(top_k * 3, 20)
+    else:
+        top_k = min(top_k * 2, 20)   # fetch 8, display 4
 
     # --- Build optional page-filter clause ---
     page_filter_clause = ""
@@ -216,10 +314,15 @@ def ask_question(
             }
         )
 
-    # Filter out chunks that are not meaningfully related to the question
-    sources = [s for s in sources if s["similarity_score"] >= 0.30]
+    # Filter out chunks that are not meaningfully related to the question.
+    # Meta-queries (summary, page contents, overview) always get top results.
+    if not is_meta:
+        sources = [s for s in sources if s["similarity_score"] >= 0.20]
 
-    # If nothing passes the relevance threshold, the query is off-topic
+    # Sort by similarity descending and keep the top 4 most relevant chunks
+    sources = sorted(sources, key=lambda s: s["similarity_score"], reverse=True)[:4]
+
+    # If nothing passes, the query is genuinely off-topic
     if not sources:
         answer = _build_off_topic_response(db, data.session_id, data.page_range if allowed_pages else None)
         db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=[]))
@@ -227,7 +330,10 @@ def ask_question(
         return QueryResponse(answer=answer, sources=[])
 
     # Generate the full structured RAG response (answer text only)
-    answer = build_rag_response(data.question, sources)
+    if is_meta:
+        answer = build_summary_response(sources)
+    else:
+        answer = build_rag_response(data.question, sources)
 
     db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=sources))
     db.commit()

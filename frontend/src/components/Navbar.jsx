@@ -6,17 +6,16 @@ export default function Navbar() {
 
   const handleLogout = () => {
     localStorage.removeItem("token");
-    navigate("/login");
+    navigate("/");
   };
 
   return (
     <nav className="navbar">
-      <Link to={token ? "/dashboard" : "/login"} className="navbar-brand">
+      <Link to="/" className="navbar-brand">
         Semantic DocQuery
       </Link>
       {token && (
         <div className="navbar-actions">
-          <Link to="/dashboard">Dashboard</Link>
           <button onClick={handleLogout} className="logout-btn">
             Logout
           </button>
