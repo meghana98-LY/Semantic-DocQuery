@@ -144,91 +144,6 @@ PostgreSQL + pgvector
 
 ---
 
-# Setup & Installation
-
-## Prerequisites
-
-* Python (3.10+)
-* Node.js (18+)
-* PostgreSQL
-* Tesseract OCR
-* Poppler (for PDF processing)
-
----
-
-## Backend Setup
-
-```bash
-# Clone repo
-git clone <your-repo-url>
-cd backend
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Setup environment variables
-cp .env.example .env
-
-# Run server
-uvicorn main:app --reload
-```
-
----
-
-## Database Setup
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
----
-
-## Frontend Setup
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
----
-
-# How to Use
-
-1. Open the web application in browser
-2. User registration/login
-3. create a chat session
-4. Upload one or multiple PDFs
-5. Enter your query
-6. Specify page range(Optional)
-7. View:
-   * Answer
-   * Source document
-   * Page numbers
-   * Similarity percentage
-
----
-
-# Production Build
-
-## Backend (Gunicorn)
-
-```bash
-gunicorn -k uvicorn.workers.UvicornWorker main:app
-```
-
-## Frontend Build
-
-```bash
-npm run build
-```
-
----
-
 # Project Structure
 
 ```
@@ -255,6 +170,69 @@ project-root/
 │   └── package.json
 │
 └── README.md
+---
+```
+
+# Setup & Installation
+
+## Prerequisites
+
+* Python (3.10+)
+* Node.js (18+)
+* PostgreSQL
+* Tesseract OCR
+* Poppler (for PDF processing)
+
+---
+
+##  Workflow
+
+1. User uploads PDF
+2. Text is extracted
+3. Content is split into chunks
+4. Embeddings are generated
+5. Stored in vector DB
+6. User query → embedding
+7. Similar chunks retrieved
+8. LLM generates response
+---
+
+## Database Setup
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+---
+
+## Backend Setup
+
+```bash
+# Clone repo
+git clone <your-repo-url>
+cd backend
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Setup environment variables
+cp .env.example .env
+
+# Run server
+uvicorn main:app --reload
+```
+
+---
+
+## Frontend Setup
+
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
 ---
