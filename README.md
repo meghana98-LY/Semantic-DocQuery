@@ -1,191 +1,185 @@
 # Semantic-DocQuery
-
-A full-stack web application that lets users upload PDF documents, ask natural language questions, and retrieve precise, readable answers using semantic search — without any external LLM API.
-
----
-
-## Table of Contents
-
-1. [High-Level Design](#high-level-design)
-2. [Implementation Details](#implementation-details)
-3. [Steps to Build and Test](#steps-to-build-and-test)
+A full-stack application that enables users to upload documents (PDFs), perform semantic search, and retrieve context-aware answers with source references and similarity scores.
 
 ---
-
-## High-Level Design
-
-### Architecture Overview
+## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Browser (React + Vite)                     │
-│   Login / Register → Dashboard → Session Chat → Upload & Query      │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │ HTTP/REST (JWT auth)
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      FastAPI Backend                                │
-│                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐ │
-│  │  Auth Router │  │ Chat Router  │  │      Upload Router        │ │
-│  │  /auth/*     │  │ /chat/*      │  │      /upload              │ │
-│  └──────────────┘  └──────────────┘  └───────────┬───────────────┘ │
-│                                                   │ BackgroundTask  │
-│  ┌────────────────────────────────────────────────▼───────────────┐ │
-│  │                    PDF Ingestion Pipeline                      │ │
-│  │                                                                │ │
-│  │  PDF File ──► PyMuPDF (text extraction)                       │ │
-│  │                   │                                           │ │
-│  │                   ▼  (if page text < 30 chars)                │ │
-│  │             Tesseract OCR  ──► OCR Noise Cleaner              │ │
-│  │                   │              (token-level filter)         │ │
-│  │                   ▼                                           │ │
-│  │            Text Chunker (800 chars, 150 overlap)              │ │
-│  │                   │                                           │ │
-│  │                   ▼                                           │ │
-│  │     SentenceTransformer Encoder (all-MiniLM-L6-v2)           │ │
-│  │                   │                                           │ │
-│  │                   ▼                                           │ │
-│  │         PostgreSQL + pgvector  (stores chunks + embeddings)   │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                     Query Router  /query                    │   │
-│  │                                                             │   │
-│  │  User Question ──► Trivial query guard (< 3-char words)    │   │
-│  │                         │                                   │   │
-│  │                         ▼                                   │   │
-│  │              Embed question (MiniLM)                        │   │
-│  │                         │                                   │   │
-│  │                         ▼                                   │   │
-│  │     pgvector cosine search  (top-K chunks, optional         │   │
-│  │                              page-range filter)             │   │
-│  │                         │                                   │   │
-│  │                         ▼                                   │   │
-│  │     Similarity threshold filter  (score ≥ 0.30)            │   │
-│  │                         │                                   │   │
-│  │              ┌──────────┴──────────┐                        │   │
-│  │              │                     │                        │   │
-│  │    Off-topic / no docs         Relevant chunks              │   │
-│  │    → document overview         → Extractive summariser      │   │
-│  │      + re-query prompt           (sentence scoring,         │   │
-│  │                                   OCR noise removal,        │   │
-│  │                                   ranked top-6 sentences)   │   │
-│  │                                        │                    │   │
-│  │                                        ▼                    │   │
-│  │                              Structured answer +            │   │
-│  │                              Source cards (chunk,           │   │
-│  │                              page, similarity %)            │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│              PostgreSQL  (hosted / local)                           │
-│   Tables: users · chat_sessions · chat_messages ·                  │
-│           documents · document_chunks (pgvector)                   │
-└─────────────────────────────────────────────────────────────────────┘
+Browser (React + Vite)
+        │
+        ▼
+FastAPI Backend (REST APIs)
+        │
+        ├──  PDF Ingestion Pipeline
+        │       ├── PyMuPDF (PDF Parsing)
+        │       ├── OCR (Tesseract for scanned PDFs)
+        │       ├── Noise Cleaner (remove headers, footers, artifacts)
+        │       ├── Chunker (split into semantic chunks)
+        │       ├── Embedder (MiniLM via sentence-transformers)
+        │       └── pgvector (store embeddings in PostgreSQL)
+        │
+        ├──  Query Pipeline
+        │       ├── Query Embedding
+        │       ├── Cosine Similarity Search (pgvector)
+        │       ├── Threshold Filtering
+        │       ├── Extractive Summariser
+        │       └── Response Builder (Answer + Source Cards)
+        │
+        ▼
+PostgreSQL + pgvector
 ```
 
-### Key Data Flow
+## System Architecture
 
-| Stage | Input | Output |
-|---|---|---|
-| **PDF Ingestion** | Uploaded PDF file | Per-page text (native or OCR) |
-| **Text Cleaning** | Raw OCR text | Noise-filtered plain text |
-| **Chunking** | Page text | 800-char overlapping chunks |
-| **Embedding** | Text chunk | 384-dim L2-normalised vector |
-| **Storage** | Chunk + vector | `document_chunks` row in PostgreSQL |
-| **Semantic Search** | Question embedding | Top-K chunks by cosine similarity |
-| **Summarisation** | Retrieved chunks | Scored, de-duplicated prose sentences |
-| **Response** | Sentences + metadata | Answer paragraph + source cards |
+
+  <img src="frontend/public/architecture.svg" width="900"/>
 
 ---
 
-## Implementation Details
+##  Data Flow Summary
 
-### Tools & Libraries
+| Stage         | Input         | Output                |
+| ------------- | ------------- | --------------------- |
+| Upload        | PDF File      | Raw Document          |
+| Parsing       | PDF           | Extracted Text        |
+| OCR           | Scanned Pages | Machine-readable Text |
+| Cleaning      | Raw Text      | Cleaned Text          |
+| Chunking      | Clean Text    | Text Chunks           |
+| Embedding     | Text Chunks   | Vector Embeddings     |
+| Storage       | Embeddings    | Stored in pgvector    |
+| Query Input   | User Query    | Query Vector          |
+| Search        | Query Vector  | Top Matching Chunks   |
+| Filtering     | Matches       | Relevant Chunks       |
+| Summarisation | Chunks        | Final Answer          |
+---
 
-#### Backend
+##  Data Flow 
 
-| Library | Version | Purpose | Rationale |
-|---|---|---|---|
-| **FastAPI** | 0.111 | REST API framework | Async-first, automatic OpenAPI docs, Pydantic validation out of the box |
-| **Uvicorn** | 0.30 | ASGI server | Lightweight, production-grade runner for FastAPI |
-| **SQLAlchemy** | 2.0 | ORM | Mature, database-agnostic; v2 style async-compatible |
-| **psycopg[binary]** | 3.1 | PostgreSQL driver | Modern async-capable driver; required by SQLAlchemy 2 |
-| **pgvector** | 0.2 | Vector similarity in Postgres | Enables cosine search (`<=>`) directly in SQL; no separate vector DB needed |
-| **python-jose** | 3.3 | JWT creation / validation | Lightweight, no external service required for auth |
-| **passlib[bcrypt]** | 1.7 | Password hashing | Industry-standard bcrypt; pluggable backend |
-| **python-multipart** | 0.0.9 | File upload parsing | Required by FastAPI for `UploadFile` |
-| **sentence-transformers** | 2.7 | Sentence embeddings | `all-MiniLM-L6-v2` produces high-quality 384-dim embeddings fast, runs locally without API cost |
-| **PyMuPDF (fitz)** | 1.24 | Native PDF text extraction | Fast, accurate extraction from text-based PDFs |
-| **pytesseract** | 0.3 | OCR fallback | Handles scanned / image-only PDF pages |
-| **pdf2image** | 1.17 | PDF → image conversion | Required to feed pages to Tesseract |
-| **Pillow** | 10.3 | Image processing | Dependency of pdf2image and pytesseract |
-| **numpy** | 1.26 | Vector normalisation | L2-normalise embeddings before storage for correct cosine distance |
-| **python-dotenv** | 1.0 | Environment config | Keeps secrets (DB URL, JWT secret) out of source code |
+                ┌──────────────┐
+                │    User      │
+                └──────┬───────┘
+                       │
+        ┌──────────────▼──────────────┐
+        │   (P1) PDF Ingestion        │
+        └──────────────┬──────────────┘
+                       ▼
+        ┌─────────────────────────────┐
+        │ (P2) Text Extraction        │
+        └──────────────┬──────────────┘
+                       ▼
+        ┌─────────────────────────────┐
+        │ (P3) Chunking               │
+        └──────────────┬──────────────┘
+                       ▼
+        ┌─────────────────────────────┐
+        │ (P4) Embedding Model        │
+        └──────────────┬──────────────┘
+                       ▼
+        ┌─────────────────────────────┐
+        │ [D1] Vector Database        │
+        └──────────────┬──────────────┘
+                       ▲
+                       │
+        ┌──────────────┴──────────────┐
+        │ (P7) Query Embedding        │
+        └──────────────┬──────────────┘
+                       ▲
+        ┌──────────────┴──────────────┐
+        │ (P6) Query Router           │
+        └──────────────┬──────────────┘
+                       ▲
+        ┌──────────────┴──────────────┐
+        │ (P5) Auth / Session         │
+        └──────────────┬──────────────┘
+                       ▲
+                    [User]
+                       │
+                       ▼
+        ┌─────────────────────────────┐
+        │ (P8) Answer Generation      │
+        └──────────────┬──────────────┘
+                       ▼
+        ┌─────────────────────────────┐
+        │ (P9) Formatter              │
+        └──────────────┬──────────────┘
+                       ▼
+                    [User]
+---
 
-#### Frontend
+# Implementation Details
 
-| Library | Version | Purpose | Rationale |
-|---|---|---|---|
-| **React** | 19 | UI framework | Component model suits chat + document panel layout |
-| **React Router DOM** | 7 | Client-side routing | SPA navigation with protected routes |
-| **Vite** | 8 | Build tool | Instant HMR, minimal config, fast production builds |
+## Backend Stack
 
-#### Infrastructure
-
-| Component | Choice | Rationale |
-|---|---|---|
-| **Database** | PostgreSQL | Native pgvector extension; ACID compliance for user/session data |
-| **Vector index** | pgvector (`<=>` cosine) | Eliminates a separate vector store; cosine distance on L2-normalised vectors equals cosine similarity |
-| **Embedding model** | `all-MiniLM-L6-v2` | 22 M parameters, 384 dims — fast on CPU, strong semantic quality, runs fully offline |
-| **Summarisation** | Extractive (sentence scoring) | Zero hallucination risk; answers are always grounded in document text |
+| Library               | Version | Purpose                  |
+| --------------------- | ------- | ------------------------ |
+| FastAPI               | Latest  | API framework            |
+| Uvicorn               | Latest  | ASGI server              |
+| SQLAlchemy            | Latest  | ORM                      |
+| pgvector              | Latest  | Vector similarity search |
+| sentence-transformers | Latest  | Embedding model          |
+| PyMuPDF               | Latest  | PDF parsing              |
+| pytesseract           | Latest  | OCR                      |
+| python-dotenv         | Latest  | Env management           |
+| pydantic              | Latest  | Data validation          |
 
 ---
 
-## Steps to Build and Test
+## Frontend Stack
 
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+
-- PostgreSQL 14+ with the **pgvector** extension installed
-- Tesseract OCR installed on the system ([Windows installer](https://github.com/UB-Mannheim/tesseract/wiki) / `apt install tesseract-ocr` on Linux)
-- Poppler installed for pdf2image ([Windows binaries](https://github.com/oschwartz10612/poppler-windows/releases) / `apt install poppler-utils` on Linux)
+| Library      | Version | Purpose    |
+| ------------ | ------- | ---------- |
+| React        | Latest  | UI library |
+| React Router | Latest  | Routing    |
+| Vite         | Latest  | Build tool |
 
 ---
 
-### 1. Clone the Repository
+## Infrastructure Choices
+
+| Component       | Choice                | Reason                      |
+| --------------- | --------------------- | --------------------------- |
+| Database        | PostgreSQL + pgvector | Efficient vector similarity |
+| Embedding Model | MiniLM                | Fast + lightweight          |
+| Summarisation   | Extractive            | Preserves factual accuracy  |
+
+---
+
+# Setup & Installation
+
+## Prerequisites
+
+* Python (3.10+)
+* Node.js (18+)
+* PostgreSQL
+* Tesseract OCR
+* Poppler (for PDF processing)
+
+---
+
+## Backend Setup
 
 ```bash
-git clone https://github.com/<your-username>/Semantic-DocQuery.git
-cd Semantic-DocQuery
+# Clone repo
+git clone <your-repo-url>
+cd backend
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Setup environment variables
+cp .env.example .env
+
+# Run server
+uvicorn main:app --reload
 ```
 
 ---
 
-### 2. Configure Environment Variables
-
-Create `backend/.env`:
-
-```env
-DATABASE_URL=postgresql+psycopg://<user>:<password>@<host>:<port>/<dbname>
-SECRET_KEY=your_jwt_secret_key_here
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-
-# Optional — only needed on Windows or non-default installs
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-POPPLER_PATH=C:\poppler\Library\bin
-```
-
----
-
-### 3. Enable pgvector in PostgreSQL
-
-Connect to your database and run:
+## Database Setup
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -193,119 +187,105 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 ---
 
-### 4. Set Up the Backend
-
-```bash
-cd backend
-
-# Create and activate virtual environment
-python -m venv venv
-
-# Windows
-venv\Scripts\activate
-# macOS / Linux
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Start the API server (tables are auto-created on first run)
-uvicorn main:app --reload --port 8000
-```
-
-The API will be available at `http://localhost:8000`.  
-Interactive docs: `http://localhost:8000/docs`.
-
----
-
-### 5. Set Up the Frontend
+## Frontend Setup
 
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Start the development server
 npm run dev
 ```
 
-The app will open at `http://localhost:5173`.
+---
+
+# How to Use
+
+1. Open the web application in browser
+2. User registration/login
+3. create a chat session
+4. Upload one or multiple PDFs
+5. Enter your query
+6. Specify page range(Optional)
+7. View:
+   * Answer
+   * Source document
+   * Page numbers
+   * Similarity percentage
 
 ---
 
-### 6. Using the Application
+# Production Build
 
-1. **Register** a new account at `/register`.
-2. **Log in** at `/login`.
-3. On the **Dashboard**, create a new chat session.
-4. Inside the session, **upload one or more PDF files**.
-5. Wait for the status indicator to change to **Completed** (processing runs in the background).
-6. **Type a question** about the document content and press Ask.
-7. The assistant returns a structured answer with source cards showing the matched page, similarity score, and a per-chunk relevant summary.
-
----
-
-### 7. Build for Production
-
-**Backend** — run behind a reverse proxy (e.g. Nginx) with Gunicorn:
+## Backend (Gunicorn)
 
 ```bash
-pip install gunicorn
-gunicorn main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+gunicorn -k uvicorn.workers.UvicornWorker main:app
 ```
 
-Update `main.py` `allow_origins` to your production frontend URL.
-
-**Frontend**:
+## Frontend Build
 
 ```bash
-cd frontend
-npm run build        # outputs to frontend/dist/
-npm run preview      # local preview of production build
+npm run build
 ```
 
 ---
 
-### 8. Project Structure
+# Project Structure
 
 ```
-sem/
+project-root/
+│
 ├── backend/
-│   ├── main.py               # FastAPI app entry point
-│   ├── auth.py               # JWT authentication helpers
-│   ├── database.py           # SQLAlchemy engine & session
-│   ├── models.py             # ORM models (User, Session, Document, Chunk)
-│   ├── schemas.py            # Pydantic request / response schemas
-│   ├── requirements.txt
 │   ├── routers/
-│   │   ├── authRouter.py     # /auth  — register, login
-│   │   ├── chatRouter.py     # /chat  — session CRUD, message history
-│   │   ├── uploadRouter.py   # /upload — PDF ingestion pipeline
-│   │   └── queryRouter.py    # /query — semantic search & answer generation
-│   └── utils/
-│       ├── pdf_parser.py     # PyMuPDF extraction + Tesseract OCR fallback
-│       ├── chunking.py       # Overlapping text chunker
-│       ├── embeddings.py     # SentenceTransformer wrapper (MiniLM)
-│       └── llm.py            # Extractive summariser & OCR noise filters
-└── frontend/
-    ├── src/
-    │   ├── App.jsx
-    │   ├── pages/
-    │   │   ├── Login.jsx
-    │   │   ├── Register.jsx
-    │   │   ├── Dashboard.jsx
-    │   │   └── SessionChat.jsx   # Main chat + upload + results UI
-    │   ├── components/
-    │   │   ├── Navbar.jsx
-    │   │   └── ProtectedRoute.jsx
-    │   └── api/
-    │       └── client.js         # Axios/fetch wrappers for all endpoints
-    └── public/
+│   │   ├── authRouter.py
+│   │   ├── chatRouter.py
+│   │   ├── queryRouter.py
+│   │   └── uploadRouter.py
+│   ├── utils/
+│   ├── uploads/
+│   ├── main.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── database.py
+│   ├── requirements.txt
+│   └── .env.example
+│
+├── frontend/
+│   ├── src/
+│   ├── public/
+│   └── package.json
+│
+└── README.md
 ```
 
 ---
 
-## License
+# Security Notes
 
-MIT
+* No hardcoded credentials
+* All secrets managed via `.env`
+* Input validation using Pydantic
+* Secure file handling
+
+---
+
+# Features
+
+* Multi-document support
+* Semantic search with similarity scoring
+* Source attribution with page numbers
+* OCR support for scanned PDFs
+* Clean and modular architecture
+
+---
+
+# Future Enhancements
+
+* Highlight relevant text in PDFs
+* Add authentication & user dashboards
+* Improve summarisation with LLMs
+* Caching for faster query responses
+
+---
+
+# License
+MIT License
