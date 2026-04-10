@@ -6,13 +6,53 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from database import get_db
-from models import ChatSession, ChatMessage, User
+from models import ChatSession, ChatMessage, Document, User
 from schemas import QueryRequest, QueryResponse, SourceItem
 from auth import get_current_user
 from utils.embeddings import get_embedding
 from utils.llm import build_rag_response, extract_relevant_summary
 
 router = APIRouter(prefix="/query", tags=["Query"])
+
+
+# ─── Off-topic response helper ────────────────────────────────────────────────
+
+def _build_off_topic_response(
+    db: Session,
+    session_id,
+    page_range: Optional[str] = None,
+) -> str:
+    """
+    Returns a message listing the uploaded documents and prompts the user
+    to ask a question relevant to their content.
+    """
+    docs = (
+        db.query(Document)
+        .filter(
+            Document.session_id == session_id,
+            Document.status == "completed",
+        )
+        .order_by(Document.created_at)
+        .all()
+    )
+
+    if docs:
+        doc_list = "\n".join(f"  • {d.filename}" for d in docs)
+        response = (
+            "Your query does not seem to be related to the uploaded documents.\n\n"
+            f"The following document(s) are available in this session:\n{doc_list}\n\n"
+            "Please ask a question related to the content of these documents."
+        )
+    else:
+        response = (
+            "No documents have been processed in this session yet. "
+            "Please upload a document first and then ask a question about its content."
+        )
+
+    if page_range:
+        response += f'\n\n(No relevant content was found on page(s) "{page_range}" either.)'
+
+    return response
 
 
 # ─── Page-range parser ────────────────────────────────────────────────────────
@@ -72,6 +112,22 @@ def ask_question(
 ):
     if not data.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    # --- Reject trivial / greeting queries (no words with 3+ chars) ---
+    meaningful_words = [w for w in re.findall(r"\b\w+\b", data.question) if len(w) >= 3]
+    if not meaningful_words:
+        # Verify session exists first so we can persist the exchange
+        session_check = db.query(ChatSession).filter(
+            ChatSession.id == data.session_id,
+            ChatSession.user_id == current_user.id,
+        ).first()
+        if not session_check:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        db.add(ChatMessage(session_id=data.session_id, role="user", content=data.question))
+        answer = _build_off_topic_response(db, data.session_id)
+        db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=[]))
+        db.commit()
+        return QueryResponse(answer=answer, sources=[])
 
     # --- Parse optional page range ---
     allowed_pages: Optional[List[int]] = None
@@ -138,20 +194,7 @@ def ask_question(
     db.add(ChatMessage(session_id=data.session_id, role="user", content=data.question))
 
     if not rows:
-        if allowed_pages:
-            answer = (
-                f"Answer:\n"
-                f"I could not find a reliable answer in the uploaded document.\n\n"
-                f"Supporting Chunks:\n"
-                f"No relevant chunks were found on page(s) \"{data.page_range}\"."
-            )
-        else:
-            answer = (
-                "Answer:\n"
-                "I could not find a reliable answer in the uploaded document.\n\n"
-                "Supporting Chunks:\n"
-                "No relevant chunks were retrieved from the uploaded documents."
-            )
+        answer = _build_off_topic_response(db, data.session_id, data.page_range if allowed_pages else None)
         db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=[]))
         db.commit()
         return QueryResponse(answer=answer, sources=[])
@@ -161,7 +204,7 @@ def ask_question(
     for row in rows:
         cosine_distance = float(row[3])
         sim_score = round(max(0.0, min(1.0, 1.0 - cosine_distance)), 4)
-        snippet = row[0][:500]
+        snippet = row[0][:750]
         sources.append(
             {
                 "document_name": row[2],
@@ -172,6 +215,16 @@ def ask_question(
                 "summary": extract_relevant_summary(snippet, data.question),
             }
         )
+
+    # Filter out chunks that are not meaningfully related to the question
+    sources = [s for s in sources if s["similarity_score"] >= 0.30]
+
+    # If nothing passes the relevance threshold, the query is off-topic
+    if not sources:
+        answer = _build_off_topic_response(db, data.session_id, data.page_range if allowed_pages else None)
+        db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=[]))
+        db.commit()
+        return QueryResponse(answer=answer, sources=[])
 
     # Generate the full structured RAG response (answer text only)
     answer = build_rag_response(data.question, sources)

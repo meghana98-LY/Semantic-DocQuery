@@ -1,4 +1,5 @@
 import os
+import re
 import fitz  # PyMuPDF
 import pytesseract
 from pdf2image import convert_from_path
@@ -13,6 +14,28 @@ POPPLER_PATH = os.getenv("POPPLER_PATH")
 # Set Tesseract path if provided
 if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+
+# ─── OCR noise cleaner ────────────────────────────────────────────────────────
+
+def _clean_ocr_text(text: str) -> str:
+    """
+    Token-level OCR noise removal applied immediately after pytesseract.
+    Drops tokens where fewer than 60 % of characters are alphanumeric —
+    catches garbage like `t'.16cA""`, `H'c!l-~`, `}-\\~`, `7L__` while
+    keeping real words, numbers, and common abbreviations.
+    """
+    clean_tokens = []
+    for tok in text.split():
+        alnum = sum(c.isalnum() for c in tok)
+        if alnum == 0:
+            continue                          # pure-punctuation token
+        if len(tok) <= 2:
+            clean_tokens.append(tok)          # keep short tokens as-is
+            continue
+        if alnum / len(tok) >= 0.60:
+            clean_tokens.append(tok)
+    return re.sub(r"\s+", " ", " ".join(clean_tokens)).strip()
 
 
 def extract_text_from_pdf(file_path: str) -> str:
@@ -49,8 +72,8 @@ def extract_text_by_page(file_path: str):
             # If extracted text is too short, use OCR
             if len(extracted_text) < 30:
                 try:
-                    ocr_text = pytesseract.image_to_string(images[i]).strip()
-                    final_text = ocr_text
+                    raw_ocr = pytesseract.image_to_string(images[i]).strip()
+                    final_text = _clean_ocr_text(raw_ocr)
                 except Exception:
                     final_text = extracted_text
             else:
