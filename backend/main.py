@@ -42,6 +42,10 @@ app.include_router(uploadRouter.router)
 app.include_router(queryRouter.router)
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.get("/")
 def root():
     return {"message": "Semantic DocQuery API is running"}

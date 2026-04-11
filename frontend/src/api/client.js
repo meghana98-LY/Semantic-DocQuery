@@ -1,5 +1,13 @@
 const BASE_URL = "http://localhost:8000";
 
+export async function checkHealth() {
+  const res = await fetch(`${BASE_URL}/health`, {
+    signal: AbortSignal.timeout(3000),
+  });
+  if (!res.ok) throw new Error("Backend not ready");
+  return true;
+}
+
 function getToken() {
   return localStorage.getItem("token");
 }
@@ -13,6 +21,11 @@ async function fetchWithRetry(url, options, retries = 3, delayMs = 1000) {
       if (isNetworkError && attempt < retries) {
         await new Promise((r) => setTimeout(r, delayMs * Math.pow(2, attempt)));
         continue;
+      }
+      if (isNetworkError) {
+        throw new Error(
+          "Cannot reach the server. Make sure the backend is running on port 8000."
+        );
       }
       throw err;
     }

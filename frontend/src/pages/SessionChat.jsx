@@ -168,7 +168,19 @@ export default function SessionChat() {
           </button>
         </form>
 
-        {uploadError && <p className="form-error">{uploadError}</p>}
+        {uploadError && (
+          <div className="upload-error-box">
+            <p className="form-error">{uploadError}</p>
+            <p className="upload-error-hint">Please discard and re-upload a valid PDF file.</p>
+            <button
+              type="button"
+              className="discard-btn"
+              onClick={() => { setUploadError(""); setFiles([]); }}
+            >
+              ✕ Discard & Re-upload
+            </button>
+          </div>
+        )}
 
         {processingCount > 0 && (
           <p className="processing-hint">
