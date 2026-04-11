@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1140 444" width="1140" height="444">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#3d4f82"/>
+    </marker>
+    <style>
+      text { font-family: 'Segoe UI', Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <!-- ─── Background ─── -->
+  <rect width="1140" height="444" fill="#ffffff"/>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  QUERY PROCESSING PIPELINE                                 -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!-- All y values shifted by -216 relative to original architecture.svg -->
+  <rect x="14" y="16" width="1112" height="408" rx="8" fill="#eef1f9" stroke="#c6cfe8" stroke-width="1.5"/>
+
+  <text x="570" y="46" text-anchor="middle" font-size="15" font-weight="700" fill="#1a1a2e">Query Processing Pipeline</text>
+
+  <!-- ── ROW 1  center_y=132, height=54, top=105, bottom=159 ── -->
+
+  <!-- [1] User Query  x=30, w=90 -->
+  <rect x="30"  y="105" width="90"  height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="75"  y="128" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">User</text>
+  <text x="75"  y="142" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Query</text>
+
+  <line x1="120" y1="132" x2="200" y2="132" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [2] Auth / Session Management  x=202, w=150 -->
+  <rect x="202" y="105" width="150" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="277" y="125" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Auth / Session</text>
+  <text x="277" y="139" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Management</text>
+
+  <line x1="352" y1="132" x2="430" y2="132" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [3] Query Router  x=432, w=112 -->
+  <rect x="432" y="105" width="112" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="488" y="128" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Query</text>
+  <text x="488" y="142" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Router</text>
+
+  <line x1="544" y1="132" x2="622" y2="132" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [4] Embedding Model  x=624, w=160 -->
+  <rect x="624" y="105" width="160" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="704" y="125" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Embedding Model</text>
+  <text x="704" y="139" text-anchor="middle" font-size="10"   fill="#3a4e7a">(all-MiniLM-L6-v2)</text>
+
+  <!-- Arrow 4→5 with label -->
+  <line x1="784" y1="132" x2="862" y2="132" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="823" y="124" text-anchor="middle" font-size="8.5" fill="#5a6a9a">Query Vector</text>
+
+  <!-- [5] Vector Database (pgvector) – cylinder -->
+  <rect   x="864" y="105" width="184" height="58" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <ellipse cx="956" cy="163" rx="92" ry="14"      fill="#dce4f5" stroke="none"/>
+  <path   d="M 864,163 A 92,14 0 0,0 1048,163"      fill="none" stroke="#3d4f82" stroke-width="1.5"/>
+  <ellipse cx="956" cy="105" rx="92" ry="14"      fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="956" y="138" text-anchor="middle" font-size="11" font-weight="700" fill="#1a1a2e">Vector Database (pgvector)</text>
+  <text x="956" y="156" text-anchor="middle" font-size="10" font-weight="500" fill="#1a1a2e">Cosine Similarity Search</text>
+
+  <!-- ── Vertical+horizontal connector: VDB bottom → Answer Gen ── -->
+  <path d="M 956 177 L 956 214 L 570 214 L 570 252"
+        stroke="#3d4f82" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <text x="766" y="207" text-anchor="middle" font-size="8.5" fill="#5a6a9a">Retrieved Chunks</text>
+
+  <!-- ── ROW 2  center_y=282, height=60, top=252, bottom=312 ── -->
+
+  <!-- [A] Answer Generation Module (key module – bolder border) center_x=570 -->
+  <rect x="446" y="252" width="248" height="60" rx="5" fill="#c4d0f2" stroke="#2c3e7a" stroke-width="2.2"/>
+  <text x="570" y="275" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1a1a2e">Answer Generation Module</text>
+  <text x="570" y="291" text-anchor="middle" font-size="9.5"  fill="#2d3e70">Factual Extract / Generative Summary</text>
+
+  <line x1="694" y1="282" x2="732" y2="282" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [B] Formatted Answer + Source Cards  x=734, w=192 -->
+  <rect x="734" y="252" width="192" height="60" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="830" y="275" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Formatted Answer</text>
+  <text x="830" y="290" text-anchor="middle" font-size="10"   fill="#3a4e7a">+ Source Cards</text>
+
+  <line x1="926" y1="282" x2="962" y2="282" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [C] User (receives answer)  x=964, w=82 -->
+  <rect x="964" y="252" width="82" height="60" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="1005" y="286" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">User</text>
+
+</svg>

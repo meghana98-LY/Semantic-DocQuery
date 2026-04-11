@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1140 228" width="1140" height="228">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#3d4f82"/>
+    </marker>
+    <style>
+      text { font-family: 'Segoe UI', Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <!-- ─── Background ─── -->
+  <rect width="1140" height="228" fill="#ffffff"/>
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!--  DOCUMENT INGESTION PIPELINE                               -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <rect x="14" y="16" width="1112" height="196" rx="8" fill="#eef1f9" stroke="#c6cfe8" stroke-width="1.5"/>
+
+  <text x="570" y="46" text-anchor="middle" font-size="15" font-weight="700" fill="#1a1a2e">Document Ingestion Pipeline</text>
+
+  <!-- center_y = 122, box height = 54 → top = 95, bottom = 149 -->
+
+  <!-- [1] User, PDF Upload  x=30, w=112 -->
+  <rect x="30"  y="95" width="112" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="86"  y="118" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">User,</text>
+  <text x="86"  y="132" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">PDF Upload</text>
+
+  <line x1="142" y1="122" x2="166" y2="122" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [2] PDF Ingestion  x=168, w=112 -->
+  <rect x="168" y="95" width="112" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="224" y="118" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">PDF</text>
+  <text x="224" y="132" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Ingestion</text>
+
+  <line x1="280" y1="122" x2="304" y2="122" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [3] Text Extraction  x=306, w=152 -->
+  <rect x="306" y="95" width="152" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="382" y="115" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Text Extraction</text>
+  <text x="382" y="130" text-anchor="middle" font-size="10"   fill="#3a4e7a">(PyMuPDF + OCR)</text>
+
+  <line x1="458" y1="122" x2="482" y2="122" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [4] Chunking Module  x=484, w=132 -->
+  <rect x="484" y="95" width="132" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="550" y="118" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Chunking</text>
+  <text x="550" y="132" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Module</text>
+
+  <line x1="616" y1="122" x2="640" y2="122" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [5] Embedding Model  x=642, w=162 -->
+  <rect x="642" y="95" width="162" height="54" rx="5" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="723" y="115" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1a1a2e">Embedding Model</text>
+  <text x="723" y="130" text-anchor="middle" font-size="10"   fill="#3a4e7a">(all-MiniLM-L6-v2)</text>
+
+  <line x1="804" y1="122" x2="840" y2="122" stroke="#3d4f82" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- [6] Vector Database – cylinder -->
+  <rect   x="862" y="106" width="136" height="50" fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <ellipse cx="930" cy="156" rx="68" ry="12"      fill="#dce4f5" stroke="none"/>
+  <path   d="M 862,156 A 68,12 0 0,0 998,156"      fill="none" stroke="#3d4f82" stroke-width="1.5"/>
+  <ellipse cx="930" cy="106" rx="68" ry="12"      fill="#dce4f5" stroke="#3d4f82" stroke-width="1.5"/>
+  <text x="930" y="135" text-anchor="middle" font-size="11" font-weight="700" fill="#1a1a2e">Vector Database</text>
+  <text x="930" y="152" text-anchor="middle" font-size="10" font-weight="500" fill="#1a1a2e">(pgvector)</text>
+
+</svg>
