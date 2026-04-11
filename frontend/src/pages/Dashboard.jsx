@@ -13,7 +13,8 @@ export default function Dashboard() {
     fetchSessions();
   }, []);
 
-  const fetchSessions = async () => {
+  const fetchSessions = async (retry = true) => {
+    setError("");
     try {
       const data = await listSessions();
       setSessions(data);
@@ -21,8 +22,11 @@ export default function Dashboard() {
       if (err.message.includes("401") || err.message.toLowerCase().includes("unauthorized")) {
         localStorage.removeItem("token");
         navigate("/login");
+      } else if (retry) {
+        // Auto-retry once after a short delay (handles cold-start / first-request lag)
+        setTimeout(() => fetchSessions(false), 1500);
       } else {
-        setError("Failed to load sessions.");
+        setError("Failed to load sessions. Check your connection and try again.");
       }
     }
   };
@@ -56,6 +60,7 @@ export default function Dashboard() {
     <div className="dashboard">
       <div className="dashboard-header">
         <h2>Your Chat Sessions</h2>
+        <p>Select a session to continue, or create a new one below.</p>
       </div>
 
       <form onSubmit={handleCreate} className="create-session-form">
@@ -70,7 +75,14 @@ export default function Dashboard() {
         </button>
       </form>
 
-      {error && <p className="form-error">{error}</p>}
+      {error && (
+        <div className="form-error">
+          <p>{error}</p>
+          <button onClick={() => fetchSessions()} style={{ marginTop: "0.5rem" }}>
+            Try Again
+          </button>
+        </div>
+      )}
 
       {sessions.length === 0 ? (
         <p className="empty-hint">No sessions yet. Create one to get started.</p>

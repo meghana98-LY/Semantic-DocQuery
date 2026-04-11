@@ -10,10 +10,12 @@ import SessionChat from "./pages/SessionChat";
 function Layout() {
   const location = useLocation();
   const isLanding = location.pathname === "/";
+  const isAuth = ["/login", "/register"].includes(location.pathname);
+
   return (
     <>
       {!isLanding && <Navbar />}
-      <main className={isLanding ? "" : "main-content"}>
+      <main className={isLanding ? "" : isAuth ? "auth-page" : "main-content"}>
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />

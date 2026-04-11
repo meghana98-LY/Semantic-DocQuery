@@ -4,6 +4,21 @@ function getToken() {
   return localStorage.getItem("token");
 }
 
+async function fetchWithRetry(url, options, retries = 3, delayMs = 1000) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError && err.message === "Failed to fetch";
+      if (isNetworkError && attempt < retries) {
+        await new Promise((r) => setTimeout(r, delayMs * Math.pow(2, attempt)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 function authHeaders() {
   return {
     Authorization: `Bearer ${getToken()}`,
@@ -26,7 +41,7 @@ async function handleResponse(res) {
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export async function registerUser(email, password) {
-  const res = await fetch(`${BASE_URL}/auth/register`, {
+  const res = await fetchWithRetry(`${BASE_URL}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -35,7 +50,7 @@ export async function registerUser(email, password) {
 }
 
 export async function loginUser(email, password) {
-  const res = await fetch(`${BASE_URL}/auth/login`, {
+  const res = await fetchWithRetry(`${BASE_URL}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -46,7 +61,7 @@ export async function loginUser(email, password) {
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
 export async function createSession(title = "New Chat") {
-  const res = await fetch(`${BASE_URL}/sessions`, {
+  const res = await fetchWithRetry(`${BASE_URL}/sessions`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({ title }),
@@ -55,14 +70,14 @@ export async function createSession(title = "New Chat") {
 }
 
 export async function listSessions() {
-  const res = await fetch(`${BASE_URL}/sessions`, {
+  const res = await fetchWithRetry(`${BASE_URL}/sessions`, {
     headers: authHeaders(),
   });
   return handleResponse(res);
 }
 
 export async function deleteSession(sessionId) {
-  const res = await fetch(`${BASE_URL}/sessions/${sessionId}`, {
+  const res = await fetchWithRetry(`${BASE_URL}/sessions/${sessionId}`, {
     method: "DELETE",
     headers: authHeaders(),
   });
@@ -73,14 +88,14 @@ export async function deleteSession(sessionId) {
 // ─── Session details ──────────────────────────────────────────────────────────
 
 export async function getSessionMessages(sessionId) {
-  const res = await fetch(`${BASE_URL}/sessions/${sessionId}/messages`, {
+  const res = await fetchWithRetry(`${BASE_URL}/sessions/${sessionId}/messages`, {
     headers: authHeaders(),
   });
   return handleResponse(res);
 }
 
 export async function getSessionDocuments(sessionId) {
-  const res = await fetch(`${BASE_URL}/sessions/${sessionId}/documents`, {
+  const res = await fetchWithRetry(`${BASE_URL}/sessions/${sessionId}/documents`, {
     headers: authHeaders(),
   });
   return handleResponse(res);
@@ -93,7 +108,7 @@ export async function uploadDocuments(sessionId, files) {
   for (const file of files) {
     formData.append("files", file);
   }
-  const res = await fetch(`${BASE_URL}/upload?session_id=${sessionId}`, {
+  const res = await fetchWithRetry(`${BASE_URL}/upload?session_id=${sessionId}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${getToken()}` }, // no Content-Type; browser sets multipart boundary
     body: formData,
@@ -108,7 +123,7 @@ export async function askQuestion(sessionId, question, pageRange = null, topK = 
   if (pageRange && pageRange.trim()) {
     body.page_range = pageRange.trim();
   }
-  const res = await fetch(`${BASE_URL}/query`, {
+  const res = await fetchWithRetry(`${BASE_URL}/query`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(body),

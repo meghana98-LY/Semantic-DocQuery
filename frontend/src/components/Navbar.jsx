@@ -11,13 +11,11 @@ export default function Navbar() {
 
   return (
     <nav className="navbar">
-      <Link to="/" className="navbar-brand">
-        Semantic DocQuery
-      </Link>
+      <Link to="/" className="navbar-brand">DocQuery</Link>
       {token && (
         <div className="navbar-actions">
           <button onClick={handleLogout} className="logout-btn">
-            Logout
+            Sign out
           </button>
         </div>
       )}

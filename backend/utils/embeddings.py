@@ -1,8 +1,15 @@
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
-# Load model once (global)
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# Lazy-loaded — avoids blocking uvicorn startup
+_model: SentenceTransformer | None = None
+
+
+def _get_model() -> SentenceTransformer:
+    global _model
+    if _model is None:
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
 
 
 def get_embedding(text: str) -> list[float]:
@@ -15,7 +22,7 @@ def get_embedding(text: str) -> list[float]:
     if not text or not text.strip():
         return []
 
-    embedding = model.encode(text)
+    embedding = _get_model().encode(text)
 
     # Normalize vector (important for cosine similarity)
     norm = np.linalg.norm(embedding)

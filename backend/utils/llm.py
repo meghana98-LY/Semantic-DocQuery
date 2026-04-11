@@ -26,6 +26,55 @@ _GK_SUFFIX = (
 )
 
 
+def correct_query_spelling(question: str) -> str:
+    """
+    Uses Groq to fix typos and spelling mistakes in the user's query.
+    Returns the corrected query, or the original if Groq is unavailable.
+    Only corrects the query — never changes its meaning or adds information.
+    """
+    if not _GROQ_API_KEY or not question.strip():
+        return question
+
+    payload = {
+        "model": _GROQ_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a spelling corrector. The user will send a short search query. "
+                    "Fix any spelling mistakes or typos. "
+                    "Return ONLY the corrected query — no explanation, no quotes, no extra words. "
+                    "If the query is already correct, return it unchanged. "
+                    "Never change the meaning, never add or remove words beyond fixing spelling."
+                ),
+            },
+            {"role": "user", "content": question},
+        ],
+        "max_tokens": 80,
+        "temperature": 0.0,
+    }
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            _GROQ_CHAT_URL,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {_GROQ_API_KEY}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:  # noqa: S310
+            result = json.loads(resp.read().decode("utf-8"))
+        corrected = result["choices"][0]["message"]["content"].strip()
+        # Safety: if response is wildly longer, the model misbehaved — keep original
+        if corrected and len(corrected) <= len(question) * 2:
+            return corrected
+    except Exception:
+        pass
+    return question
+
+
 def build_general_knowledge_response(question: str) -> str:
     """
     Called when documents exist in the session but no relevant chunk was
@@ -89,15 +138,83 @@ _BANK_HEADER_RE = re.compile(
 )
 
 
+# ─── Encoding-noise patterns ────────────────────────────────────────────────
+
+# CJK + Hangul block — same ranges as pdf_parser
+_CJK_NOISE_RE = re.compile(
+    r"[\u1100-\u11FF"   # Hangul Jamo
+    r"\u2E80-\u2EFF"   # CJK Radicals Supplement
+    r"\u2F00-\u2FDF"   # Kangxi Radicals
+    r"\u3000-\u303F"   # CJK Symbols and Punctuation
+    r"\u3040-\u30FF"   # Hiragana + Katakana
+    r"\u3100-\u318F"   # Bopomofo + Hangul Compatibility Jamo
+    r"\u3200-\u32FF"   # Enclosed CJK
+    r"\u3400-\u4DBF"   # CJK Extension A
+    r"\u4E00-\u9FFF"   # CJK Unified Ideographs
+    r"\uA960-\uA97F"   # Hangul Jamo Extended-A
+    r"\uAC00-\uD7FF"   # Hangul Syllables + Jamo Extended-B
+    r"\uF900-\uFAFF"   # CJK Compatibility Ideographs
+    r"\uFE30-\uFE4F"   # CJK Compatibility Forms
+    r"\U00020000-\U0002A6DF]+"  # CJK Extension B
+)
+
+# Greek letters used as ligature substitutes (Θ→ti, Σ→tt, Ω→ff, etc.)
+# Using Unicode escapes \u0391-\u03C9 (uppercase + lowercase) for reliable matching
+# regardless of source-file encoding.
+_GREEK_UPPER_NOISE_RE = re.compile(r"[\u0391-\u03C9]+")
+
+# Unicode ligature characters that PyMuPDF sometimes outputs correctly encoded
+# but PDF viewers substitute them as garbled — normalise them back
+_LIGATURE_MAP = str.maketrans({
+    "\uFB00": "ff",  # ﬀ
+    "\uFB01": "fi",  # ﬁ
+    "\uFB02": "fl",  # ﬂ
+    "\uFB03": "ffi", # ﬃ
+    "\uFB04": "ffl", # ﬄ
+    "\uFB05": "st",  # ﬅ
+    "\uFB06": "st",  # ﬆ
+})
+
+# Latin Extended-A/B and IPA Extension chars embedded INSIDE ASCII words.
+# These appear when broken PDF fonts substitute ligatures (ti, tt, ft, fl, fi)
+# with obscure Latin Extended codepoints like Ɵ (ti), Ʃ (tt), Ō (ft), ƞ (tf).
+# Pattern: ASCII letter(s) + Latin-Ext char(s) + ASCII letter(s)
+_EMBEDDED_LATIN_EXT_RE = re.compile(r"(?<=[a-zA-Z])[\u0100-\u02FF]+(?=[a-zA-Z])")
+# Standalone Latin Extended noise (surrounded by whitespace)
+_STANDALONE_LATIN_EXT_RE = re.compile(r"(?:^|(?<=\s))[\u0100-\u02FF]+(?=\s|$)")
+
+
+def _strip_encoding_noise(text: str) -> str:
+    """
+    Remove or normalise encoding artifacts that survive OCR / PDF extraction:
+    - CJK/Hangul blocks used as font-encoding placeholders
+    - Greek range substitutes (Θ for 'ti', Σ for 'tt', etc.)
+    - Latin Extended-A/B/IPA chars used as ligature substitutes inside words
+    - Unicode ligature characters → ASCII equivalents
+    """
+    text = text.translate(_LIGATURE_MAP)
+    text = _CJK_NOISE_RE.sub(" ", text)
+    text = _GREEK_UPPER_NOISE_RE.sub("", text)
+    # Strip Latin Extended substitutes embedded within words (e.g. CommunicaƟon → Communication)
+    text = _EMBEDDED_LATIN_EXT_RE.sub("", text)
+    # Strip standalone Latin Extended noise tokens
+    text = _STANDALONE_LATIN_EXT_RE.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# Public alias for use in other modules
+strip_encoding_noise = _strip_encoding_noise
+
+
 # ─── Runtime chunk cleaner ────────────────────────────────────────────────────
 
 def _clean_chunk_text(text: str) -> str:
     """
     Remove OCR noise tokens from an already-stored chunk (single-line).
     Drops tokens where fewer than 60 % of chars are alphanumeric.
-    Matches the same logic used in pdf_parser._clean_ocr_text so that
-    chunks stored before the ingestion fix also get cleaned at query time.
+    Also strips CJK and Greek encoding noise before token filtering.
     """
+    text = _strip_encoding_noise(text)
     clean_tokens = []
     for tok in text.split():
         alnum = sum(c.isalnum() for c in tok)
@@ -146,6 +263,9 @@ def _is_clean_sentence(sent: str) -> bool:
         return False
     # Reject bank-statement column header rows
     if _BANK_HEADER_RE.search(sent):
+        return False
+    # Reject mid-sentence fragments (start with lowercase — continuation of a cut chunk)
+    if sent[0].islower():
         return False
     return True
 
@@ -274,6 +394,10 @@ def extract_relevant_summary(chunk_text: str, question: str, max_sentences: int 
     For prose chunks:
       - Top-scored clean sentences in original order.
     """
+    # Strip encoding noise (CJK, Hangul, Greek substitutes, ligatures) before
+    # any branch so garbled characters never appear in the card summary.
+    chunk_text = _strip_encoding_noise(chunk_text)
+
     is_bank = bool(re.search(
         r'\b(NEFT|RTGS|IMPS|UPI|Txn\s+Date|Cheque|IB NEFT)\b',
         chunk_text, re.IGNORECASE,
@@ -415,12 +539,8 @@ def _build_extractive_summary(question: str, sources: list[dict[str, Any]]) -> s
             cleaned = _clean_chunk_text(src["snippet"])
             first_two = [s for s in _split_sentences(cleaned) if _is_clean_sentence(s)][:2]
             if first_two:
-                doc_label = f" in '{src['document_name']}'" if src["document_name"] else ""
                 body = " ".join(first_two)
-                return (
-                    f"The document{doc_label} contains the following content related to your query:\n\n"
-                    f"{body}\n\n[Page {src['page_number']}]"
-                )
+                return body
         # Try structured/tabular description
         descriptions: list[str] = []
         seen_desc: set[str] = set()
@@ -454,26 +574,14 @@ def _build_extractive_summary(question: str, sources: list[dict[str, Any]]) -> s
     primary_doc = ordered[0][2] if ordered else (sources[0]["document_name"] if sources else "")
     intro = _make_intro(intent, topic, primary_doc)
 
-    # Compose generative paragraph with connectors and inline page citations
+    # Compose generative paragraph with connectors (no inline page citations)
     lines: list[str] = [intro, ""]
-    prev_page = -1
     for i, (page, sent, _) in enumerate(ordered):
         connector = _CONNECTORS[min(i, len(_CONNECTORS) - 1)]
-        # Show [Page N] when page changes
-        page_tag = f" [Page {page}]" if page != prev_page else ""
-        prev_page = page
         if connector:
-            lines.append(f"{connector} {sent}{page_tag}")
+            lines.append(f"{connector} {sent}")
         else:
-            lines.append(f"{sent}{page_tag}")
-
-    # Append a brief page reference summary at the end
-    unique_pages = sorted({p for p, _, _ in ordered})
-    if len(unique_pages) == 1:
-        lines.append(f"\n(Relevant content found on page {unique_pages[0]})")
-    elif len(unique_pages) > 1:
-        page_list = ", ".join(str(p) for p in unique_pages)
-        lines.append(f"\n(Relevant content found on pages {page_list})")
+            lines.append(sent)
 
     return "\n".join(lines).strip()
 
@@ -827,11 +935,11 @@ def build_rag_response(question: str, sources: list[dict[str, Any]]) -> str:
     return _build_extractive_summary(question, sources)
 
 
-def build_summary_response(sources: list[dict[str, Any]]) -> str:
+def build_summary_response(sources: list[dict[str, Any]], question: str = "") -> str:
     """
     Called for document-level meta queries (summarize, overview, page contents).
-    Produces a structured, generative-style overview with key points as bullets
-    and page citations, rather than a raw wall of extracted text.
+    Sends the retrieved chunk content to Groq and asks it to answer the user's
+    specific query. Falls back to local extraction when Groq is unavailable.
     """
     if not sources:
         return _FALLBACK
@@ -839,10 +947,93 @@ def build_summary_response(sources: list[dict[str, Any]]) -> str:
     doc_names = sorted({s["document_name"] for s in sources})
     doc_label = "', '".join(doc_names)
 
+    # ── Build context from chunks — noise stripped via _clean_chunk_text ─────
+    context_parts: list[str] = []
+    for src in sorted(sources, key=lambda s: (s["document_name"], s["page_number"])):
+        raw = _clean_chunk_text(src["snippet"])
+        if raw:
+            context_parts.append(f"[Page {src['page_number']}] {raw}")
+
+    if not context_parts:
+        return _FALLBACK
+
+    context = "\n".join(context_parts)
+
+    # Determine if the query has a specific focus beyond just "summarize"
+    _generic_meta = re.compile(
+        r"^\s*(summar(y|ize|ise)|overview|describe|explain|\s*contents?|what\s+is\s+(this|it))",
+        re.IGNORECASE,
+    )
+    has_specific_query = bool(question.strip()) and not _generic_meta.match(question.strip())
+
+    # ── Groq LLM summary ──────────────────────────────────────────────────────
+    if _GROQ_API_KEY:
+        if has_specific_query:
+            user_instruction = (
+                f"User's question: {question}\n\n"
+                f"Document: '{doc_label}'\n\nExtracted content:\n{context}\n\n"
+                "Please answer the user's question based on the document content above. "
+                "Be specific and concise (3-6 sentences)."
+            )
+        else:
+            user_instruction = (
+                f"Document: '{doc_label}'\n\nExtracted content:\n{context}\n\n"
+                "Please write a summary of this document."
+            )
+        payload = {
+            "model": _GROQ_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a document assistant. The user uploaded a document and has a "
+                        "question or wants a summary. You are given extracted text chunks from "
+                        "the document. Answer specifically and concisely in plain English "
+                        "(3-6 sentences). "
+                        "Do NOT mention page numbers, chunk numbers, or technical retrieval details. "
+                        "Do NOT include any footer or meta commentary. "
+                        "Some words may contain encoding errors — a stray Greek letter like Σ, Θ, "
+                        "or Ω embedded inside an English word (e.g. 'liΣle' means 'little', "
+                        "'communicaΘon' means 'communication', 'mulΘple' means 'multiple'). "
+                        "Silently fix such words and write the corrected English. "
+                        "If a word is too garbled to recover, skip it. "
+                        "If the chunk contains masked data like [REDACTED] or [EMAIL REDACTED], "
+                        "mention that certain sensitive fields are present but protected — do not "
+                        "attempt to reveal or guess them."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": user_instruction,
+                },
+            ],
+            "max_tokens": 400,
+            "temperature": 0.3,
+        }
+        try:
+            body = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                _GROQ_CHAT_URL,
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {_GROQ_API_KEY}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+                result = json.loads(resp.read().decode("utf-8"))
+            answer = result["choices"][0]["message"]["content"].strip()
+            if answer:
+                if has_specific_query:
+                    return answer
+                return f"Here is an overview of '{doc_label}':\n\n{answer}"
+        except Exception:
+            pass  # fall through to local extraction
+
+    # ── Local extraction fallback (no Groq) ───────────────────────────────────
     seen_norm: set[str] = set()
-    # (page_number, sentence) in document order
     prose_points: list[tuple[int, str]] = []
-    # (page_number, description) for tabular/financial chunks
     tabular_points: list[tuple[int, str]] = []
 
     for src in sorted(sources, key=lambda s: (s["document_name"], s["page_number"])):
@@ -863,38 +1054,32 @@ def build_summary_response(sources: list[dict[str, Any]]) -> str:
             seen_norm.add(norm)
             prose_points.append((src["page_number"], sent))
 
-    # Build a structured, readable overview
-    lines: list[str] = [f"Here is an overview of '{doc_label}':", ""]
+    # For specific queries, score sentences by relevance; for generic overview, preserve order
+    if has_specific_query and prose_points:
+        q_words = set(w.lower() for w in re.findall(r"\b\w+\b", question) if len(w) >= 3)
+        scored = sorted(prose_points, key=lambda ps: _score_sentence(ps[1], q_words), reverse=True)
+        prose_points = scored[:8]
+        # Restore page order for readability
+        prose_points = sorted(prose_points, key=lambda ps: ps[0])
+
+    lines: list[str] = []
 
     if prose_points:
-        # Group by page for a page-by-page narrative
+        all_sents: list[str] = []
         page_map: dict[int, list[str]] = {}
         for page, sent in prose_points[:12]:
             page_map.setdefault(page, []).append(sent)
-
         for page in sorted(page_map.keys()):
-            sents = page_map[page]
-            # One summary bullet per page: join first 2 sentences from that page
-            combined = " ".join(sents[:2])
-            lines.append(f"  • [Page {page}] {combined}")
-
+            all_sents.extend(page_map[page][:2])
+        lines.append(" ".join(all_sents))
         if tabular_points:
             lines.append("")
-            lines.append("Structured or tabular data also found:")
-            for page, desc in tabular_points[:4]:
-                lines.append(f"  • [Page {page}] {desc}")
-
+            lines.append("The document also contains structured or tabular data.")
     elif tabular_points:
-        lines.append(f"'{doc_label}' contains structured or tabular data:")
-        lines.append("")
-        for page, desc in tabular_points:
-            lines.append(f"  • [Page {page}] {desc}")
-
+        descs = " ".join(desc for _, desc in tabular_points)
+        lines.append(descs)
     else:
         return _FALLBACK
-
-    total_pages = len({p for p, _ in prose_points} | {p for p, _ in tabular_points})
-    lines.append(f"\n(Summary based on {total_pages} page(s) retrieved from the document)")
 
     return "\n".join(lines).strip()
 

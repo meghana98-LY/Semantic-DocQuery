@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from database import Base, engine
+from database import Base, engine, SessionLocal
 
 from routers import authRouter, uploadRouter, queryRouter, chatRouter
 
@@ -9,11 +9,28 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Semantic Document Query API")
 
-# CORS — update allow_origins with your production frontend URL when deploying
+
+@app.on_event("startup")
+def warmup_db():
+    """Open and immediately close a DB connection to warm up the pool on startup."""
+    db = SessionLocal()
+    try:
+        db.execute(__import__("sqlalchemy").text("SELECT 1"))
+    finally:
+        db.close()
+
+# CORS — allow all localhost variants for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

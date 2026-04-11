@@ -10,9 +10,39 @@ from models import ChatSession, ChatMessage, Document, User
 from schemas import QueryRequest, QueryResponse, SourceItem
 from auth import get_current_user
 from utils.embeddings import get_embedding
-from utils.llm import build_rag_response, build_summary_response, extract_relevant_summary
+from utils.llm import build_rag_response, build_summary_response, extract_relevant_summary, correct_query_spelling, strip_encoding_noise
+from utils.masking import mask_sensitive_data
 
 router = APIRouter(prefix="/query", tags=["Query"])
+
+
+# ─── Sensitive-query detector ─────────────────────────────────────────────────
+
+_SENSITIVE_RE = re.compile(
+    r"\b(password|passwd|pwd|passcode|passphrase|"
+    r"pin|upi\s*pin|atm\s*pin|mpin|m-pin|"
+    r"otp|cvv|"
+    r"email\s*address|e-?mail|"
+    r"phone\s*number|mobile\s*number|contact\s*number|"
+    r"account\s*(?:no|number|num)|bank\s*account|"
+    r"card\s*(?:no|number)|credit\s*card|debit\s*card|"
+    r"pan\s*(?:card|no|number)?|aadhaar|aadhar|"
+    r"ifsc|upi\s*id|vpa|"
+    r"date\s*of\s*birth|dob|"
+    r"ssn|social\s*security)\b",
+    re.IGNORECASE,
+)
+
+_SENSITIVE_ANSWER = (
+    "This information is classified as sensitive or confidential and cannot be shared. "
+    "Passwords, PINs, email addresses, account numbers, card details, and similar personal "
+    "data are protected and will not be disclosed."
+)
+
+
+def _is_sensitive_query(question: str) -> bool:
+    """Return True when the query is explicitly asking for sensitive/PII data."""
+    return bool(_SENSITIVE_RE.search(question))
 
 
 # ─── Meta-query detector ──────────────────────────────────────────────────────
@@ -29,13 +59,19 @@ _DOC_NOUN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Also matches any query that references a specific document by number/name
+_DOC_REF_RE = re.compile(
+    r"\bdoc(?:ument)?\s*\d+|\bdoc(?:ument)?\s*[a-z]\b",
+    re.IGNORECASE,
+)
+
 _META_RE = re.compile(
     r"\b(summar(y|ize|ise|ies)|overview|describe|explain|"
     r"contents?\s*of|"
     r"what\s+(is|are|does)\s+(this|it)\b|what\s+is\s+(in|on)\b|"
     r"tell\s+me|show\s+me|list\s+(all\s+)?|"
     r"give\s+(me\s+)?(the\s+)?(content|summary|overview|info|detail|list|all)|"
-    r"what\s+is\s+(about)|about\s+(the\s+)?doc(ument)?|"
+    r"what\s+is\s+(about)|about\s+(the\s+)?doc(ument)?\d*|"
     r"page\s+\d+|pages?\s+\d+)\b",
     re.IGNORECASE,
 )
@@ -65,6 +101,9 @@ def _is_meta_query(question: str) -> bool:
     if _SPECIFIC_QUERY_RE.search(question):
         return False
     if _META_RE.search(question):
+        return True
+    # Any query referencing a specific document by number is always a meta query
+    if _DOC_REF_RE.search(question):
         return True
     # Short queries (≤5 words) whose non-stop content is a document-type noun
     words = re.findall(r"\b\w+\b", question)
@@ -242,7 +281,11 @@ def _run_bm25_search(
         bm25_rank  = float(row[3])
         # ts_rank_cd is already in [0, 1]; normalise to the same field name
         sim_score  = round(min(1.0, bm25_rank), 4)
-        snippet    = row[0][:750]
+        raw_snip = strip_encoding_noise(row[0][:1500])
+        last_b = max(raw_snip.rfind('. '), raw_snip.rfind('! '), raw_snip.rfind('? '))
+        if last_b > 200:
+            raw_snip = raw_snip[:last_b + 1]
+        snippet    = raw_snip
         sources.append({
             "document_name":    row[2],
             "page_number":      row[1],
@@ -255,6 +298,39 @@ def _run_bm25_search(
     return sources
 
 
+# ─── Document name extractor ──────────────────────────────────────────────────
+
+def _extract_doc_filter(question: str, db: Session, session_id, user_id) -> Optional[List[str]]:
+    """
+    If the question mentions a document by name (e.g. 'document1', 'doc2',
+    'Document1.pdf'), return the matching filenames from the DB so results
+    can be filtered to that document only.
+    Returns None if no document reference is detected.
+    """
+    # Look for patterns like: document1, doc1, document 1, doc 2, document1.pdf
+    m = re.search(
+        r'\b(doc(?:ument)?\s*(\d+)(?:\.pdf)?)\b',
+        question, re.IGNORECASE,
+    )
+    if not m:
+        return None
+
+    doc_num = m.group(2)  # e.g. "1", "2", "3"
+
+    # Fetch all completed filenames for this session
+    docs = db.query(Document.filename).filter(
+        Document.session_id == session_id,
+        Document.user_id == user_id,
+        Document.status == "completed",
+    ).all()
+
+    matched = [
+        d.filename for d in docs
+        if doc_num in re.findall(r'\d+', d.filename)
+    ]
+    return matched if matched else None
+
+
 # ─── Query endpoint ───────────────────────────────────────────────────────────
 
 @router.post("", response_model=QueryResponse)
@@ -265,6 +341,19 @@ def ask_question(
 ):
     if not data.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    # --- Block queries explicitly asking for sensitive / PII data ---
+    if _is_sensitive_query(data.question):
+        session_check = db.query(ChatSession).filter(
+            ChatSession.id == data.session_id,
+            ChatSession.user_id == current_user.id,
+        ).first()
+        if not session_check:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        db.add(ChatMessage(session_id=data.session_id, role="user", content=data.question))
+        db.add(ChatMessage(session_id=data.session_id, role="assistant", content=_SENSITIVE_ANSWER, sources=[]))
+        db.commit()
+        return QueryResponse(answer=_SENSITIVE_ANSWER, sources=[])
 
     # --- Reject trivial / greeting queries (no words with 3+ chars) ---
     meaningful_words = [w for w in re.findall(r"\b\w+\b", data.question) if len(w) >= 3]
@@ -304,8 +393,11 @@ def ask_question(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
+    # --- Correct spelling mistakes in the query before embedding ---
+    corrected_question = correct_query_spelling(data.question)
+
     # --- Generate query embedding ---
-    question_embedding = get_embedding(data.question)
+    question_embedding = get_embedding(corrected_question)
     if not question_embedding:
         raise HTTPException(
             status_code=500,
@@ -321,8 +413,9 @@ def ask_question(
     else:
         top_k = min(top_k * 2, 20)   # fetch 8, display 4
 
-    # --- Build optional page-filter clause ---
+    # --- Build optional page-filter and doc-filter clauses ---
     page_filter_clause = ""
+    doc_filter_clause = ""
     params: dict = {
         "embedding":  embedding_str,
         "session_id": str(data.session_id),
@@ -332,6 +425,12 @@ def ask_question(
     if allowed_pages:
         page_filter_clause = "AND dc.page_number = ANY(:pages)"
         params["pages"] = allowed_pages
+
+    # Filter by document name if mentioned in the question
+    matched_docs = _extract_doc_filter(data.question, db, data.session_id, current_user.id)
+    if matched_docs:
+        doc_filter_clause = "AND d.filename = ANY(:doc_names)"
+        params["doc_names"] = matched_docs
 
     # --- Semantic search using cosine distance (<=>)  ---
     # Embeddings are L2-normalised, so cosine_distance = 1 - cosine_similarity.
@@ -349,6 +448,7 @@ def ask_question(
           AND d.status     = 'completed'
           AND dc.embedding IS NOT NULL
           {page_filter_clause}
+          {doc_filter_clause}
         ORDER BY dc.embedding <=> CAST(:embedding AS vector)
         LIMIT :top_k
     """)
@@ -368,12 +468,15 @@ def ask_question(
         if session_has_docs:
             # ── BM25 fallback: vector index missed; try keyword search ────────
             bm25_sources = _run_bm25_search(
-                db, data.question, data.session_id, current_user.id,
-                page_filter_clause,
-                {"pages": allowed_pages} if allowed_pages else None,
+                db, corrected_question, data.session_id, current_user.id,
+                page_filter_clause + " " + doc_filter_clause,
+                {**(({"pages": allowed_pages}) if allowed_pages else {}), **(({"doc_names": matched_docs}) if matched_docs else {})},
             )
             if bm25_sources:
-                answer = build_rag_response(data.question, bm25_sources)
+                for s in bm25_sources:
+                    s["snippet"] = mask_sensitive_data(s["snippet"])
+                    s["summary"] = mask_sensitive_data(s.get("summary", ""))
+                answer = mask_sensitive_data(build_rag_response(corrected_question, bm25_sources))
                 db.add(ChatMessage(
                     session_id=data.session_id, role="assistant",
                     content=answer, sources=bm25_sources,
@@ -396,7 +499,12 @@ def ask_question(
     for row in rows:
         cosine_distance = float(row[3])
         sim_score = round(max(0.0, min(1.0, 1.0 - cosine_distance)), 4)
-        snippet = row[0][:750]
+        raw_text = strip_encoding_noise(row[0][:1500])
+        # Cut at the last sentence boundary so snippets never end mid-sentence
+        last_boundary = max(raw_text.rfind('. '), raw_text.rfind('! '), raw_text.rfind('? '))
+        if last_boundary > 200:
+            raw_text = raw_text[:last_boundary + 1]
+        snippet = mask_sensitive_data(raw_text)
         sources.append(
             {
                 "document_name": row[2],
@@ -404,14 +512,29 @@ def ask_question(
                 "snippet": snippet,
                 "similarity_score": sim_score,
                 "similarity_percent": f"{round(sim_score * 100)}%",
-                "summary": extract_relevant_summary(snippet, data.question),
+                "summary": mask_sensitive_data(extract_relevant_summary(snippet, corrected_question)),
             }
         )
 
-    # Filter out chunks that are not meaningfully related to the question.
-    # Meta-queries (summary, page contents, overview) always get top results.
-    if not is_meta:
-        sources = [s for s in sources if s["similarity_score"] >= 0.20]
+    # Always keep the top 4 retrieved chunks sorted by similarity score —
+    # no minimum threshold so every query always surfaces 4 results.
+    # For meta queries with a specific proper noun absent from all chunks,
+    # treat as off-topic (entity genuinely not in the document).
+    if is_meta:
+        _meta_stop = {"give", "show", "tell", "list", "get", "find", "the",
+                      "me", "a", "an", "about", "summary", "overview", "of"}
+        query_words = corrected_question.split()
+        specific_entity = next(
+            (w for w in query_words
+             if w[0].isupper() and w.lower() not in _meta_stop and len(w) > 2),
+            None
+        )
+        if specific_entity:
+            all_chunk_text = " ".join(s["snippet"] for s in sources)
+            entity_in_chunks = specific_entity.lower() in all_chunk_text.lower()
+            max_score = max((s["similarity_score"] for s in sources), default=0)
+            if not entity_in_chunks and max_score < 0.45:
+                sources = []
 
     # Sort by similarity descending and keep the top 4 most relevant chunks
     sources = sorted(sources, key=lambda s: s["similarity_score"], reverse=True)[:4]
@@ -420,11 +543,14 @@ def ask_question(
     if not sources:
         bm25_sources = _run_bm25_search(
             db, data.question, data.session_id, current_user.id,
-            page_filter_clause,
-            {"pages": allowed_pages} if allowed_pages else None,
+            page_filter_clause + " " + doc_filter_clause,
+            {**({"pages": allowed_pages} if allowed_pages else {}), **({"doc_names": matched_docs} if matched_docs else {})},
         )
         if bm25_sources:
-            answer = build_rag_response(data.question, bm25_sources)
+            for s in bm25_sources:
+                s["snippet"] = mask_sensitive_data(s["snippet"])
+                s["summary"] = mask_sensitive_data(s.get("summary", ""))
+            answer = mask_sensitive_data(build_rag_response(corrected_question, bm25_sources))
             db.add(ChatMessage(
                 session_id=data.session_id, role="assistant",
                 content=answer, sources=bm25_sources,
@@ -442,9 +568,9 @@ def ask_question(
 
     # Generate the full structured RAG response (answer text only)
     if is_meta:
-        answer = build_summary_response(sources)
+        answer = mask_sensitive_data(build_summary_response(sources, corrected_question))
     else:
-        answer = build_rag_response(data.question, sources)
+        answer = mask_sensitive_data(build_rag_response(corrected_question, sources))
 
     db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=sources))
     db.commit()

@@ -10,6 +10,7 @@ from auth import get_current_user
 from utils.pdf_parser import extract_text_by_page
 from utils.chunking import chunk_text
 from utils.embeddings import get_embedding
+from utils.masking import mask_sensitive_data
 from schemas import UploadResponse, UploadResponseItem
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
@@ -37,13 +38,14 @@ def process_document(file_path: str, document_id: uuid.UUID):
             page_text = page["text"]
 
             for chunk in chunk_text(page_text):
-                embedding = get_embedding(chunk)
+                masked_chunk = mask_sensitive_data(chunk)
+                embedding = get_embedding(masked_chunk)
 
                 db_chunk = DocumentChunk(
                     document_id=document_id,
                     chunk_index=chunk_counter,
                     page_number=page_number,
-                    chunk_text=chunk,
+                    chunk_text=masked_chunk,
                     embedding=embedding if embedding else None
                 )
                 db.add(db_chunk)

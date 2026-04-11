@@ -1,4 +1,5 @@
 import HighlightedText from "./HighlightedText";
+import RedactedText from "./RedactedText";
 
 // Source cards rendered below an assistant answer.
 export default function SourceCards({ sources, query }) {
@@ -24,9 +25,11 @@ export default function SourceCards({ sources, query }) {
                   ? "sim-mid"
                   : "sim-low"
               }`}
-              title={`Cosine similarity: ${src.similarity_score}`}
+              title="Cosine similarity score (0–1)"
             >
-              {src.similarity_percent} similarity
+              {typeof src.similarity_score === "number"
+                ? src.similarity_score.toFixed(4)
+                : "—"}
             </span>
           </div>
 
@@ -34,7 +37,9 @@ export default function SourceCards({ sources, query }) {
           {src.summary && (
             <div className="chunk-section chunk-summary-section">
               <span className="chunk-section-label">Summary</span>
-              <p className="chunk-summary">{src.summary}</p>
+              <p className="chunk-summary">
+                <RedactedText text={src.summary} />
+              </p>
             </div>
           )}
 
