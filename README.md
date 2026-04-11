@@ -68,7 +68,6 @@ PostgreSQL + pgvector
 | scikit-learn | 1.4.2 | Similarity and utility functions |
 ---
 
-# Implementation Details
 
 ##  Workflow
 
@@ -95,6 +94,8 @@ PostgreSQL + pgvector
 7. LLM generates answer using retrieved context  
 
 ---
+# Implementation Details
+
 ## Backend Stack
 
 | Library               | Version | Purpose                  |
