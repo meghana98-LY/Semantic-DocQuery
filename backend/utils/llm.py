@@ -1,134 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import re
-import urllib.request
 from typing import Any
 
 _FALLBACK = "I could not find a reliable answer in the uploaded document."
-
-# ─── General-knowledge fallback (Groq) ───────────────────────────────────────
-
-_GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
-_GROQ_MODEL    = os.getenv("GROQ_MODEL", "llama3-8b-8192")
-_GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-_GK_PREFIX = (
-    "\u26a0\ufe0f **No relevant information was found in the uploaded documents.** "
-    "The following answer is drawn from general knowledge and may not reflect "
-    "the specific content of your documents:\n\n"
-)
-_GK_SUFFIX = (
-    "\n\n---\n"
-    "*\u2139\ufe0f This answer was generated from general knowledge, "
-    "not from your uploaded documents. Verify with a trusted source if accuracy matters.*"
-)
-
-
-def correct_query_spelling(question: str) -> str:
-    """
-    Uses Groq to fix typos and spelling mistakes in the user's query.
-    Returns the corrected query, or the original if Groq is unavailable.
-    Only corrects the query — never changes its meaning or adds information.
-    """
-    if not _GROQ_API_KEY or not question.strip():
-        return question
-
-    payload = {
-        "model": _GROQ_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a spelling corrector. The user will send a short search query. "
-                    "Fix any spelling mistakes or typos. "
-                    "Return ONLY the corrected query — no explanation, no quotes, no extra words. "
-                    "If the query is already correct, return it unchanged. "
-                    "Never change the meaning, never add or remove words beyond fixing spelling."
-                ),
-            },
-            {"role": "user", "content": question},
-        ],
-        "max_tokens": 80,
-        "temperature": 0.0,
-    }
-    try:
-        body = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            _GROQ_CHAT_URL,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {_GROQ_API_KEY}",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:  # noqa: S310
-            result = json.loads(resp.read().decode("utf-8"))
-        corrected = result["choices"][0]["message"]["content"].strip()
-        # Safety: if response is wildly longer, the model misbehaved — keep original
-        if corrected and len(corrected) <= len(question) * 2:
-            return corrected
-    except Exception:
-        pass
-    return question
-
-
-def build_general_knowledge_response(question: str) -> str:
-    """
-    Called when documents exist in the session but no relevant chunk was
-    found for the query.  If GROQ_API_KEY is configured, asks Groq for a
-    brief general-knowledge answer and wraps it in a disclaimer.  Otherwise
-    returns a polite message telling the user the answer was not in the docs.
-    """
-    if not _GROQ_API_KEY:
-        return (
-            "I could not find relevant information about this topic in your "
-            "uploaded documents, and no general-knowledge model is configured.\n\n"
-            "Please try rephrasing your question, or consult an external resource."
-        )
-
-    payload = {
-        "model": _GROQ_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful assistant. The user is using a document Q&A system "
-                    "but their question could not be answered from the uploaded documents. "
-                    "Answer concisely from your general knowledge in 2-4 sentences. "
-                    "Be factual and avoid speculation."
-                ),
-            },
-            {"role": "user", "content": question},
-        ],
-        "max_tokens": 350,
-        "temperature": 0.3,
-    }
-
-    try:
-        body = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            _GROQ_CHAT_URL,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {_GROQ_API_KEY}",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=12) as resp:  # noqa: S310
-            result = json.loads(resp.read().decode("utf-8"))
-        answer = result["choices"][0]["message"]["content"].strip()
-        return _GK_PREFIX + answer + _GK_SUFFIX
-    except Exception:
-        return (
-            _GK_PREFIX
-            + "I was unable to retrieve a general-knowledge answer at this time. "
-            "Please try rephrasing your question or consult an external resource."
-            + _GK_SUFFIX
-        )
 
 # Matches bank-statement column header rows, e.g.
 #   "Txn Date Value Date Cheque No. Description Branch Code Debit Credit Balance"
@@ -938,26 +814,13 @@ def build_rag_response(question: str, sources: list[dict[str, Any]]) -> str:
 def build_summary_response(sources: list[dict[str, Any]], question: str = "") -> str:
     """
     Called for document-level meta queries (summarize, overview, page contents).
-    Sends the retrieved chunk content to Groq and asks it to answer the user's
-    specific query. Falls back to local extraction when Groq is unavailable.
+    Extracts and composes a response locally from the retrieved chunks.
     """
     if not sources:
         return _FALLBACK
 
     doc_names = sorted({s["document_name"] for s in sources})
     doc_label = "', '".join(doc_names)
-
-    # ── Build context from chunks — noise stripped via _clean_chunk_text ─────
-    context_parts: list[str] = []
-    for src in sorted(sources, key=lambda s: (s["document_name"], s["page_number"])):
-        raw = _clean_chunk_text(src["snippet"])
-        if raw:
-            context_parts.append(f"[Page {src['page_number']}] {raw}")
-
-    if not context_parts:
-        return _FALLBACK
-
-    context = "\n".join(context_parts)
 
     # Determine if the query has a specific focus beyond just "summarize"
     _generic_meta = re.compile(
@@ -966,72 +829,7 @@ def build_summary_response(sources: list[dict[str, Any]], question: str = "") ->
     )
     has_specific_query = bool(question.strip()) and not _generic_meta.match(question.strip())
 
-    # ── Groq LLM summary ──────────────────────────────────────────────────────
-    if _GROQ_API_KEY:
-        if has_specific_query:
-            user_instruction = (
-                f"User's question: {question}\n\n"
-                f"Document: '{doc_label}'\n\nExtracted content:\n{context}\n\n"
-                "Please answer the user's question based on the document content above. "
-                "Be specific and concise (3-6 sentences)."
-            )
-        else:
-            user_instruction = (
-                f"Document: '{doc_label}'\n\nExtracted content:\n{context}\n\n"
-                "Please write a summary of this document."
-            )
-        payload = {
-            "model": _GROQ_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a document assistant. The user uploaded a document and has a "
-                        "question or wants a summary. You are given extracted text chunks from "
-                        "the document. Answer specifically and concisely in plain English "
-                        "(3-6 sentences). "
-                        "Do NOT mention page numbers, chunk numbers, or technical retrieval details. "
-                        "Do NOT include any footer or meta commentary. "
-                        "Some words may contain encoding errors — a stray Greek letter like Σ, Θ, "
-                        "or Ω embedded inside an English word (e.g. 'liΣle' means 'little', "
-                        "'communicaΘon' means 'communication', 'mulΘple' means 'multiple'). "
-                        "Silently fix such words and write the corrected English. "
-                        "If a word is too garbled to recover, skip it. "
-                        "If the chunk contains masked data like [REDACTED] or [EMAIL REDACTED], "
-                        "mention that certain sensitive fields are present but protected — do not "
-                        "attempt to reveal or guess them."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": user_instruction,
-                },
-            ],
-            "max_tokens": 400,
-            "temperature": 0.3,
-        }
-        try:
-            body = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                _GROQ_CHAT_URL,
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {_GROQ_API_KEY}",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
-                result = json.loads(resp.read().decode("utf-8"))
-            answer = result["choices"][0]["message"]["content"].strip()
-            if answer:
-                if has_specific_query:
-                    return answer
-                return f"Here is an overview of '{doc_label}':\n\n{answer}"
-        except Exception:
-            pass  # fall through to local extraction
-
-    # ── Local extraction fallback (no Groq) ───────────────────────────────────
+    # ── Local extraction ──────────────────────────────────────────────────────
     seen_norm: set[str] = set()
     prose_points: list[tuple[int, str]] = []
     tabular_points: list[tuple[int, str]] = []

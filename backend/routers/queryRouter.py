@@ -10,7 +10,7 @@ from models import ChatSession, ChatMessage, Document, User
 from schemas import QueryRequest, QueryResponse, SourceItem
 from auth import get_current_user
 from utils.embeddings import get_embedding
-from utils.llm import build_rag_response, build_summary_response, extract_relevant_summary, correct_query_spelling, strip_encoding_noise
+from utils.llm import build_rag_response, build_summary_response, extract_relevant_summary, strip_encoding_noise
 from utils.masking import mask_sensitive_data
 
 router = APIRouter(prefix="/query", tags=["Query"])
@@ -393,8 +393,7 @@ def ask_question(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    # --- Correct spelling mistakes in the query before embedding ---
-    corrected_question = correct_query_spelling(data.question)
+    corrected_question = data.question
 
     # --- Generate query embedding ---
     question_embedding = get_embedding(corrected_question)
