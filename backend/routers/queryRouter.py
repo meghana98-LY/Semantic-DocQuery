@@ -188,6 +188,73 @@ def parse_page_range(raw: str) -> List[int]:
     )
 
 
+# ─── BM25 keyword-search fallback ───────────────────────────────────────────
+
+def _run_bm25_search(
+    db: Session,
+    question: str,
+    session_id,
+    user_id,
+    page_filter_clause: str = "",
+    extra_params: Optional[dict] = None,
+    top_k: int = 4,
+) -> list[dict]:
+    """
+    PostgreSQL full-text search (ts_rank_cd) used as a BM25 keyword fallback
+    when cosine similarity returns no chunks above the relevance threshold.
+
+    Returns sources in the same dict format as the main vector search so that
+    build_rag_response / build_summary_response can consume them directly.
+    """
+    params: dict = {
+        "session_id": str(session_id),
+        "user_id":    str(user_id),
+        "query_text": question,
+        "top_k":      top_k,
+    }
+    if extra_params:
+        params.update(extra_params)
+
+    bm25_sql = text(f"""
+        SELECT
+            dc.chunk_text,
+            dc.page_number,
+            d.filename,
+            ts_rank_cd(
+                to_tsvector('english', dc.chunk_text),
+                plainto_tsquery('english', :query_text)
+            ) AS bm25_rank
+        FROM document_chunks dc
+        JOIN documents d ON dc.document_id = d.id
+        WHERE d.session_id = CAST(:session_id AS uuid)
+          AND d.user_id    = CAST(:user_id AS uuid)
+          AND d.status     = 'completed'
+          AND to_tsvector('english', dc.chunk_text)
+              @@ plainto_tsquery('english', :query_text)
+          {page_filter_clause}
+        ORDER BY bm25_rank DESC
+        LIMIT :top_k
+    """)
+
+    rows = db.execute(bm25_sql, params).fetchall()
+    sources: list[dict] = []
+    for row in rows:
+        bm25_rank  = float(row[3])
+        # ts_rank_cd is already in [0, 1]; normalise to the same field name
+        sim_score  = round(min(1.0, bm25_rank), 4)
+        snippet    = row[0][:750]
+        sources.append({
+            "document_name":    row[2],
+            "page_number":      row[1],
+            "snippet":          snippet,
+            "similarity_score": sim_score,
+            "similarity_percent": f"{round(sim_score * 100)}%",
+            "summary":          extract_relevant_summary(snippet, question),
+            "retrieval_method": "bm25",   # informational tag
+        })
+    return sources
+
+
 # ─── Query endpoint ───────────────────────────────────────────────────────────
 
 @router.post("", response_model=QueryResponse)
@@ -292,7 +359,34 @@ def ask_question(
     db.add(ChatMessage(session_id=data.session_id, role="user", content=data.question))
 
     if not rows:
-        answer = _build_off_topic_response(db, data.session_id, data.page_range if allowed_pages else None)
+        # Check whether any completed documents exist in this session
+        session_has_docs = db.query(Document).filter(
+            Document.session_id == data.session_id,
+            Document.status == "completed",
+        ).first() is not None
+
+        if session_has_docs:
+            # ── BM25 fallback: vector index missed; try keyword search ────────
+            bm25_sources = _run_bm25_search(
+                db, data.question, data.session_id, current_user.id,
+                page_filter_clause,
+                {"pages": allowed_pages} if allowed_pages else None,
+            )
+            if bm25_sources:
+                answer = build_rag_response(data.question, bm25_sources)
+                db.add(ChatMessage(
+                    session_id=data.session_id, role="assistant",
+                    content=answer, sources=bm25_sources,
+                ))
+                db.commit()
+                return QueryResponse(
+                    answer=answer,
+                    sources=[SourceItem(**{k: v for k, v in s.items() if k != "retrieval_method"}) for s in bm25_sources],
+                )
+            # BM25 also found nothing
+            answer = _build_off_topic_response(db, data.session_id, data.page_range if allowed_pages else None)
+        else:
+            answer = _build_off_topic_response(db, data.session_id, data.page_range if allowed_pages else None)
         db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=[]))
         db.commit()
         return QueryResponse(answer=answer, sources=[])
@@ -322,8 +416,25 @@ def ask_question(
     # Sort by similarity descending and keep the top 4 most relevant chunks
     sources = sorted(sources, key=lambda s: s["similarity_score"], reverse=True)[:4]
 
-    # If nothing passes, the query is genuinely off-topic
+    # If nothing passes the similarity threshold, try BM25 keyword fallback
     if not sources:
+        bm25_sources = _run_bm25_search(
+            db, data.question, data.session_id, current_user.id,
+            page_filter_clause,
+            {"pages": allowed_pages} if allowed_pages else None,
+        )
+        if bm25_sources:
+            answer = build_rag_response(data.question, bm25_sources)
+            db.add(ChatMessage(
+                session_id=data.session_id, role="assistant",
+                content=answer, sources=bm25_sources,
+            ))
+            db.commit()
+            return QueryResponse(
+                answer=answer,
+                sources=[SourceItem(**{k: v for k, v in s.items() if k != "retrieval_method"}) for s in bm25_sources],
+            )
+        # BM25 also found nothing
         answer = _build_off_topic_response(db, data.session_id, data.page_range if allowed_pages else None)
         db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=[]))
         db.commit()
