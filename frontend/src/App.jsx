@@ -73,9 +73,9 @@ export default function App() {
       <div className="backend-connecting">
         <div className="backend-connecting-card">
           <span className="backend-spinner" />
-          <p className="backend-connecting-title">Connecting to server…</p>
+          <p className="backend-connecting-title">Please wait while backend is loading…</p>
           <p className="backend-connecting-sub">
-            Make sure the backend is running on <code>http://localhost:8000</code>
+            Connecting to server, this may take a moment.
           </p>
           {attempt > 3 && (
             <p className="backend-connecting-hint">
