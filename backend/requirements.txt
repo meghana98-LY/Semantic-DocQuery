@@ -22,7 +22,7 @@ python-dotenv==1.0.1
 # ── ML / Embeddings ───────────────────────────────────────────────────────────
 sentence-transformers==2.7.0
 transformers==4.41.2
-torch==2.5.1
+torch==2.6.0
 tokenizers==0.19.1
 safetensors==0.7.0
 huggingface_hub==0.32.1
