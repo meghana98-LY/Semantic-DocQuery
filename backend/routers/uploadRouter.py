@@ -9,7 +9,7 @@ from models import Document, DocumentChunk, ChatSession, User
 from auth import get_current_user
 from utils.pdf_parser import extract_text_by_page
 from utils.chunking import chunk_text
-from utils.embeddings import get_embedding
+from utils.embeddings import get_embedding, get_embeddings_batch
 from utils.masking import mask_sensitive_data
 from schemas import UploadResponse, UploadResponseItem
 
@@ -31,25 +31,43 @@ def process_document(file_path: str, document_id: uuid.UUID):
     db = SessionLocal()
     try:
         pages = extract_text_by_page(file_path)
+        all_chunks = []
         chunk_counter = 0
 
+        # Collect all chunks first
         for page in pages:
             page_number = page["page_number"]
             page_text = page["text"]
 
             for chunk in chunk_text(page_text):
                 masked_chunk = mask_sensitive_data(chunk)
-                embedding = get_embedding(masked_chunk)
+                all_chunks.append({
+                    'chunk_text': masked_chunk,
+                    'page_number': page_number,
+                    'chunk_index': chunk_counter
+                })
+                chunk_counter += 1
 
+        # Batch generate embeddings
+        if all_chunks:
+            texts = [chunk['chunk_text'] for chunk in all_chunks]
+            embeddings = get_embeddings_batch(texts)
+
+            # Create DocumentChunk objects
+            db_chunks = []
+            for i, chunk_data in enumerate(all_chunks):
+                embedding = embeddings[i] if i < len(embeddings) else []
                 db_chunk = DocumentChunk(
                     document_id=document_id,
-                    chunk_index=chunk_counter,
-                    page_number=page_number,
-                    chunk_text=masked_chunk,
+                    chunk_index=chunk_data['chunk_index'],
+                    page_number=chunk_data['page_number'],
+                    chunk_text=chunk_data['chunk_text'],
                     embedding=embedding if embedding else None
                 )
-                db.add(db_chunk)
-                chunk_counter += 1
+                db_chunks.append(db_chunk)
+
+            # Bulk insert
+            db.add_all(db_chunks)
 
         document = db.query(Document).filter(Document.id == document_id).first()
         if document:

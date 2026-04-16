@@ -298,6 +298,24 @@ def _run_bm25_search(
     return sources
 
 
+def _try_bm25_fallback(db: Session, question: str, session_id, user_id, page_filter_clause: str, doc_filter_clause: str, allowed_pages, matched_docs) -> Optional[list[dict]]:
+    """
+    Attempts BM25 search as fallback.
+    Returns sources if found, else None.
+    """
+    bm25_sources = _run_bm25_search(
+        db, question, session_id, user_id,
+        page_filter_clause + " " + doc_filter_clause,
+        {**(({"pages": allowed_pages}) if allowed_pages else {}), **(({"doc_names": matched_docs}) if matched_docs else {})},
+    )
+    if bm25_sources:
+        for s in bm25_sources:
+            s["snippet"] = mask_sensitive_data(s["snippet"])
+            s["summary"] = mask_sensitive_data(s.get("summary", ""))
+        return bm25_sources
+    return None
+
+
 # ─── Document name extractor ──────────────────────────────────────────────────
 
 def _extract_doc_filter(question: str, db: Session, session_id, user_id) -> Optional[List[str]]:
@@ -393,10 +411,8 @@ def ask_question(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    corrected_question = data.question
-
     # --- Generate query embedding ---
-    question_embedding = get_embedding(corrected_question)
+    question_embedding = get_embedding(data.question)
     if not question_embedding:
         raise HTTPException(
             status_code=500,
@@ -466,16 +482,9 @@ def ask_question(
 
         if session_has_docs:
             # ── BM25 fallback: vector index missed; try keyword search ────────
-            bm25_sources = _run_bm25_search(
-                db, corrected_question, data.session_id, current_user.id,
-                page_filter_clause + " " + doc_filter_clause,
-                {**(({"pages": allowed_pages}) if allowed_pages else {}), **(({"doc_names": matched_docs}) if matched_docs else {})},
-            )
+            bm25_sources = _try_bm25_fallback(db, data.question, data.session_id, current_user.id, page_filter_clause, doc_filter_clause, allowed_pages, matched_docs)
             if bm25_sources:
-                for s in bm25_sources:
-                    s["snippet"] = mask_sensitive_data(s["snippet"])
-                    s["summary"] = mask_sensitive_data(s.get("summary", ""))
-                answer = mask_sensitive_data(build_rag_response(corrected_question, bm25_sources))
+                answer = mask_sensitive_data(build_rag_response(data.question, bm25_sources))
                 db.add(ChatMessage(
                     session_id=data.session_id, role="assistant",
                     content=answer, sources=bm25_sources,
@@ -511,7 +520,7 @@ def ask_question(
                 "snippet": snippet,
                 "similarity_score": sim_score,
                 "similarity_percent": f"{round(sim_score * 100)}%",
-                "summary": mask_sensitive_data(extract_relevant_summary(snippet, corrected_question)),
+                "summary": mask_sensitive_data(extract_relevant_summary(snippet, data.question)),
             }
         )
 
@@ -522,7 +531,7 @@ def ask_question(
     if is_meta:
         _meta_stop = {"give", "show", "tell", "list", "get", "find", "the",
                       "me", "a", "an", "about", "summary", "overview", "of"}
-        query_words = corrected_question.split()
+        query_words = data.question.split()
         specific_entity = next(
             (w for w in query_words
              if w[0].isupper() and w.lower() not in _meta_stop and len(w) > 2),
@@ -540,16 +549,9 @@ def ask_question(
 
     # If nothing passes the similarity threshold, try BM25 keyword fallback
     if not sources:
-        bm25_sources = _run_bm25_search(
-            db, data.question, data.session_id, current_user.id,
-            page_filter_clause + " " + doc_filter_clause,
-            {**({"pages": allowed_pages} if allowed_pages else {}), **({"doc_names": matched_docs} if matched_docs else {})},
-        )
+        bm25_sources = _try_bm25_fallback(db, data.question, data.session_id, current_user.id, page_filter_clause, doc_filter_clause, allowed_pages, matched_docs)
         if bm25_sources:
-            for s in bm25_sources:
-                s["snippet"] = mask_sensitive_data(s["snippet"])
-                s["summary"] = mask_sensitive_data(s.get("summary", ""))
-            answer = mask_sensitive_data(build_rag_response(corrected_question, bm25_sources))
+            answer = mask_sensitive_data(build_rag_response(data.question, bm25_sources))
             db.add(ChatMessage(
                 session_id=data.session_id, role="assistant",
                 content=answer, sources=bm25_sources,
@@ -567,9 +569,9 @@ def ask_question(
 
     # Generate the full structured RAG response (answer text only)
     if is_meta:
-        answer = mask_sensitive_data(build_summary_response(sources, corrected_question))
+        answer = mask_sensitive_data(build_summary_response(sources, data.question))
     else:
-        answer = mask_sensitive_data(build_rag_response(corrected_question, sources))
+        answer = mask_sensitive_data(build_rag_response(data.question, sources))
 
     db.add(ChatMessage(session_id=data.session_id, role="assistant", content=answer, sources=sources))
     db.commit()

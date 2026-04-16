@@ -1,8 +1,5 @@
 import os
 import re
-import fitz  # PyMuPDF
-import pytesseract
-from pdf2image import convert_from_path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,9 +8,8 @@ load_dotenv()
 TESSERACT_CMD = os.getenv("TESSERACT_CMD")
 POPPLER_PATH = os.getenv("POPPLER_PATH")
 
-# Set Tesseract path if provided
-if TESSERACT_CMD:
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+# ─── OCR noise cleaner ────────────────────────────────────────────────────────
 
 
 # ─── OCR noise cleaner ────────────────────────────────────────────────────────
@@ -139,6 +135,14 @@ def extract_text_by_page(file_path: str):
         ...
     ]
     """
+    import fitz  # PyMuPDF
+    import pytesseract
+    from pdf2image import convert_from_path
+
+    # Set Tesseract path if provided
+    if TESSERACT_CMD:
+        pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
     try:
         doc = fitz.open(file_path)
         pages = []

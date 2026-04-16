@@ -4,15 +4,16 @@ from database import Base, engine, SessionLocal
 
 from routers import authRouter, uploadRouter, queryRouter, chatRouter
 
-# Create all tables
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(title="Semantic Document Query API")
 
 
 @app.on_event("startup")
-def warmup_db():
-    """Open and immediately close a DB connection to warm up the pool on startup."""
+async def startup_event():
+    """Create tables if they don't exist and warm up DB."""
+    # Create all tables (idempotent)
+    Base.metadata.create_all(bind=engine)
+    
+    # Warm up DB connection
     db = SessionLocal()
     try:
         db.execute(__import__("sqlalchemy").text("SELECT 1"))
