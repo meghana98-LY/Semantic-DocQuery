@@ -3,7 +3,6 @@ import uuid
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
-
 from database import get_db, SessionLocal
 from models import Document, DocumentChunk, ChatSession, User
 from auth import get_current_user
