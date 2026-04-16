@@ -126,7 +126,7 @@ PostgreSQL + pgvector
 | Component | Choice | Reason |
 |----------|--------|--------|
 | Database | PostgreSQL + pgvector | Efficient vector similarity search |
-| Embedding Model | all-MiniLM-L6-v2 | Fast, lightweight, 384-dimensional embeddings |
+| Embedding Model | all-MiniLM-L12-v2 | Fast, lightweight, 384-dimensional embeddings |
 | Summarisation | Extractive (local) | No external API dependency; preserves factual accuracy |
 
 ---
