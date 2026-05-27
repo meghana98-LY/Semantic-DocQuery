@@ -1,5 +1,7 @@
 import os
 import uuid
+import logging
+import traceback
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -11,6 +13,9 @@ from utils.chunking import chunk_text
 from utils.embeddings import get_embedding, get_embeddings_batch
 from utils.masking import mask_sensitive_data
 from schemas import UploadResponse, UploadResponseItem
+
+# Logger for background processing to surface exceptions to server logs
+logger = logging.getLogger("document_processor")
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
@@ -29,6 +34,7 @@ def process_document(file_path: str, document_id: uuid.UUID):
     """
     db = SessionLocal()
     try:
+        logger.info("Starting document processing: %s (id=%s)", file_path, document_id)
         pages = extract_text_by_page(file_path)
         all_chunks = []
         chunk_counter = 0
@@ -72,13 +78,19 @@ def process_document(file_path: str, document_id: uuid.UUID):
         if document:
             document.status = "completed"
         db.commit()
+        logger.info("Document processing completed: id=%s", document_id)
 
-    except Exception:
+    except Exception as e:
         db.rollback()
         document = db.query(Document).filter(Document.id == document_id).first()
         if document:
             document.status = "failed"
             db.commit()
+        # Log full exception with traceback so we can diagnose background failures
+        logger.exception("Document processing failed for id=%s, file=%s: %s", document_id, file_path, str(e))
+        # Also print traceback to ensure it appears in the terminal output
+        print(f"Document processing failed for id={document_id}, file={file_path}: {e}")
+        print(traceback.format_exc())
     finally:
         db.close()
 

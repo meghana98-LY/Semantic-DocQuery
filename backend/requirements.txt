@@ -6,7 +6,7 @@ python-multipart==0.0.20
 
 # ── Database ──────────────────────────────────────────────────────────────────
 SQLAlchemy==2.0.40
-psycopg[binary]==3.2.13
+psycopg2-binary==2.9.9
 pgvector==0.3.6
 greenlet==3.3.2
 

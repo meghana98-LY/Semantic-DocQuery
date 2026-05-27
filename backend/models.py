@@ -16,6 +16,7 @@ class DocumentStatus(str, enum.Enum):
     failed = "failed"
 
 
+
 # ─── User ─────────────────────────────────────────────────────────────────────
 
 class User(Base):

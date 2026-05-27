@@ -4,7 +4,7 @@
   "scripts": {
     "postinstall": "cd frontend && npm install",
     "frontend": "cd frontend && npm run dev",
-    "backend": "cd backend && venv\\Scripts\\python -m uvicorn main:app --reload",
+    "backend": "cd backend && ..\\venv\\Scripts\\python -m uvicorn main:app --reload",
     "dev": "concurrently \"npm run backend\" \"wait-on http-get://localhost:8000 && npm run frontend\""
   },
   "devDependencies": {

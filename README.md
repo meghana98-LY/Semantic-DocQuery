@@ -243,13 +243,13 @@ uvicorn main:app --reload
 
 **Frontend Setup**
 ```bash
-cd sem/frontend
+cd frontend
 npm install
 npm run dev
 ```
 **run both together from the root:**
 ```bash
-cd sem
+
 npm install       # installs concurrently + wait-on, also runs frontend npm install
 npm run dev       # starts backend first, then frontend once backend is ready
 

@@ -1,6 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import Base, engine, SessionLocal
+from dotenv import load_dotenv
+import os
+
+# Ensure .env is loaded and Poppler bin is on PATH so pdf2image can find pdfinfo/pdftoppm
+load_dotenv()
+POPPLER_PATH = os.getenv("POPPLER_PATH")
+if POPPLER_PATH:
+    os.environ["PATH"] = POPPLER_PATH + os.pathsep + os.environ.get("PATH", "")
 
 from routers import authRouter, uploadRouter, queryRouter, chatRouter
 

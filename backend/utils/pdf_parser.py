@@ -147,6 +147,17 @@ def extract_text_by_page(file_path: str):
         doc = fitz.open(file_path)
         pages = []
 
+        # Debug: log poppler path and presence of expected executables
+        try:
+            print(f"DEBUG: POPPLER_PATH={POPPLER_PATH}")
+            if POPPLER_PATH:
+                pdfinfo_path = os.path.join(POPPLER_PATH, "pdfinfo.exe")
+                pdftoppm_path = os.path.join(POPPLER_PATH, "pdftoppm.exe")
+                print(f"DEBUG: pdfinfo exists: {os.path.exists(pdfinfo_path)} -> {pdfinfo_path}")
+                print(f"DEBUG: pdftoppm exists: {os.path.exists(pdftoppm_path)} -> {pdftoppm_path}")
+        except Exception:
+            pass
+
         # Convert all pages to images once (for OCR fallback)
         images = convert_from_path(file_path, poppler_path=POPPLER_PATH)
 
