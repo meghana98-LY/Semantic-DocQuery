@@ -219,7 +219,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 **Backend Setup**
 ```bash
 git clone <your-repo-url>
-cd sem/backend
+cd backend
 
 python -m venv venv
 
